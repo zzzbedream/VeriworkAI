@@ -91,7 +91,7 @@ pnpm --filter @veriwork/agent-worker dev
 ## Team
 
 - **Lucas Cifuentes**, CEO
-- **Cristian**, CTO
+- **Christian Perez de Arce**, CTO
 
 ## License
 
