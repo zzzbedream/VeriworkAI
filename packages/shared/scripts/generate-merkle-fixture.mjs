@@ -16,9 +16,19 @@ const rows = [
   [EPOCH_ID, getAddress('0x3333333333333333333333333333333333333333'), 1n, 0n],
 ];
 
-const tree = StandardMerkleTree.of(rows.map((r) => r.map((v) => (typeof v === 'bigint' ? v.toString() : v))), LEAF_TYPES);
+const tree = StandardMerkleTree.of(
+  rows.map((r) => r.map((v) => (typeof v === 'bigint' ? v.toString() : v))),
+  LEAF_TYPES,
+);
 const independentLeaf = ([e, a, amt, trial]) =>
-  keccak256(keccak256(encodeAbiParameters(LEAF_TYPES.map((type) => ({ type })), [e, a, amt, trial])));
+  keccak256(
+    keccak256(
+      encodeAbiParameters(
+        LEAF_TYPES.map((type) => ({ type })),
+        [e, a, amt, trial],
+      ),
+    ),
+  );
 
 const entries = [];
 for (const [i, value] of tree.entries()) {
@@ -35,9 +45,12 @@ for (const [i, value] of tree.entries()) {
     proof: tree.getProof(i),
   });
 }
-if (!entries.every((e) => tree.verify(rows.find((r) => r[1] === e.account).map(String), e.proof))) throw new Error('proof failed');
+if (!entries.every((e) => tree.verify(rows.find((r) => r[1] === e.account).map(String), e.proof)))
+  throw new Error('proof failed');
 
 const out = { epochId: Number(EPOCH_ID), leafTypes: LEAF_TYPES, root: tree.root, entries };
-const target = fileURLToPath(new URL('../../contracts/test/fixtures/merkle-epoch.json', import.meta.url));
+const target = fileURLToPath(
+  new URL('../../contracts/test/fixtures/merkle-epoch.json', import.meta.url),
+);
 writeFileSync(target, JSON.stringify(out, null, 2) + '\n');
 console.log('root', tree.root, 'entries', entries.length, '->', target);

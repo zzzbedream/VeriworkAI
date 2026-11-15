@@ -1,0 +1,511 @@
+// VeriWork AI database (PostgreSQL). Conventions:
+// - wallet / contract addresses are stored lowercase (CHECK constraints in the check-constraints migration);
+// - wei amounts are Decimal(78, 0) (exact uint256), converted to bigint without going through Number;
+// - every instant is timestamptz.
+// The connection URL lives in prisma.config.ts (Prisma 7: no URL in the datasource block).
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  WORKER
+  REVIEWER
+  QA
+  SPONSOR
+  ADMIN
+}
+
+enum TaskType {
+  RLHF
+  TRANSLATION_VALIDATION
+  LABELING
+}
+
+enum CampaignStatus {
+  DRAFT
+  FUNDED
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum BatchStatus {
+  DRAFT
+  AI_DRAFTED
+  IN_HUMAN_REVIEW
+  CONSENSUS_REACHED
+  SETTLED_ON_CHAIN
+  CANCELLED
+}
+
+enum SubmissionStatus {
+  PENDING_REVIEW
+  PENDING_QA
+  ACCEPTED
+  REJECTED
+}
+
+enum EpochStatus {
+  DRAFT
+  POSTED
+  VETOED
+  SWEPT
+}
+
+enum AgentStatus {
+  ACTIVE
+  SUSPENDED
+  UNBONDING
+  WITHDRAWN
+}
+
+enum GasTopUpStatus {
+  REQUESTED
+  SENT
+  FAILED
+}
+
+enum NotificationStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum AlertSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum PriceSource {
+  MENTO_RESERVE
+  COINGECKO
+}
+
+enum GuardianActionKind {
+  PAUSE
+  VETO_EPOCH
+}
+
+enum GuardianActionStatus {
+  PENDING
+  SENT
+  CONFIRMED
+  SKIPPED
+  FAILED
+}
+
+/// A wallet that signed in with SIWE. No demographic data and no GoodID certificates are ever stored.
+model User {
+  walletAddress       String    @id @db.VarChar(42)
+  /// GoodID whitelisted root found by the last check (`getWhitelistedRoot`), null when none was found.
+  goodIdRoot          String?   @db.VarChar(42)
+  goodIdVerified      Boolean   @default(false)
+  goodIdLastCheckedAt DateTime? @db.Timestamptz(3)
+  goodIdExpiresAt     DateTime? @db.Timestamptz(3)
+  /// True while the root is in its short first verification window (alert 24 h before expiry).
+  goodIdFirstWindow   Boolean   @default(false)
+  telegramChatId      BigInt?   @unique
+  locale              String    @default("en") @db.VarChar(16)
+  languages           String[]  @default([])
+  roles               Role[]    @default([WORKER])
+  reputation          Int       @default(0)
+  invitedByAddress    String?   @db.VarChar(42)
+  createdAt           DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @db.Timestamptz(3)
+
+  trialSession   TrialSession?
+  submissions    TaskSubmission[]
+  telegramTokens TelegramLinkToken[]
+
+  @@index([goodIdRoot])
+  @@index([goodIdVerified, goodIdExpiresAt])
+  @@index([invitedByAddress])
+}
+
+/// Pre-verification trial: at most 2 tasks per wallet (enforced atomically), earnings escrowed in the epoch.
+model TrialSession {
+  walletAddress         String    @id @db.VarChar(42)
+  tasksCompleted        Int       @default(0)
+  escrowedWei           Decimal   @default(0) @db.Decimal(78, 0)
+  startedAt             DateTime  @default(now()) @db.Timestamptz(3)
+  completedAt           DateTime? @db.Timestamptz(3)
+  convertedToVerifiedAt DateTime? @db.Timestamptz(3)
+  /// GoodID root the trial converted to (a human gets the trial reward once; the contract forfeits repeats).
+  convertedRoot         String?   @db.VarChar(42)
+
+  user User @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
+
+  @@index([startedAt])
+  @@index([convertedRoot])
+}
+
+/// B2B campaign escrowed on-chain under `onchainId` (bytes32).
+model Campaign {
+  id               String         @id @default(uuid()) @db.Uuid
+  onchainId        String         @unique @db.VarChar(66)
+  sponsorAddress   String         @db.VarChar(42)
+  title            String         @db.VarChar(200)
+  description      String
+  taskType         TaskType
+  instructions     String
+  languages        String[]       @default([])
+  requiredModuleId Int?
+  rewardPerItemWei Decimal        @db.Decimal(78, 0)
+  reviewerFeeWei   Decimal        @db.Decimal(78, 0)
+  qaFeeWei         Decimal        @db.Decimal(78, 0)
+  itemsTarget      Int
+  status           CampaignStatus @default(DRAFT)
+  fundedWei        Decimal        @default(0) @db.Decimal(78, 0)
+  fundTxHash       String?        @db.VarChar(66)
+  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
+
+  batches TaskBatch[]
+
+  @@index([sponsorAddress, createdAt])
+  @@index([status, createdAt])
+}
+
+/// A batch of items; mirrors the on-chain batch state machine (DRAFT = not opened on-chain yet).
+model TaskBatch {
+  id              String      @id @default(uuid()) @db.Uuid
+  onchainId       String      @unique @db.VarChar(66)
+  campaignId      String      @db.Uuid
+  status          BatchStatus @default(DRAFT)
+  maxPayoutWei    Decimal     @db.Decimal(78, 0)
+  payoutWei       Decimal?    @db.Decimal(78, 0)
+  resultsHash     String?     @db.VarChar(66)
+  epochId         Int?
+  openTxHash      String?     @db.VarChar(66)
+  reviewTxHash    String?     @db.VarChar(66)
+  consensusTxHash String?     @db.VarChar(66)
+  settleTxHash    String?     @db.VarChar(66)
+  cancelTxHash    String?     @db.VarChar(66)
+  deadlineAt      DateTime?   @db.Timestamptz(3)
+  publishedAt     DateTime?   @db.Timestamptz(3)
+  consensusAt     DateTime?   @db.Timestamptz(3)
+  createdAt       DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime    @updatedAt @db.Timestamptz(3)
+
+  // Restrict: settled work is the audit trail behind epoch roots and must never be cascaded away.
+  campaign    Campaign         @relation(fields: [campaignId], references: [id], onDelete: Restrict)
+  items       TaskItem[]
+  submissions TaskSubmission[]
+
+  @@index([campaignId, status])
+  @@index([status, createdAt])
+  @@index([epochId])
+}
+
+/// One unit of work; the AI contributor drafts it first (signed `keccak256(canonicalJSON(output))`).
+model TaskItem {
+  id              String    @id @default(uuid()) @db.Uuid
+  batchId         String    @db.Uuid
+  position        Int
+  input           Json
+  aiAgentAddress  String?   @db.VarChar(42)
+  aiModel         String?   @db.VarChar(100)
+  aiInitialOutput Json?
+  aiOutputHash    String?   @db.VarChar(66)
+  aiSignature     String?
+  aiDraftedAt     DateTime? @db.Timestamptz(3)
+  createdAt       DateTime  @default(now()) @db.Timestamptz(3)
+
+  batch       TaskBatch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  submissions TaskSubmission[]
+
+  @@unique([batchId, position])
+}
+
+/// A human correction of an AI draft, then reviewed (score 1-5) and QA-voted (2 of 3).
+model TaskSubmission {
+  id              String           @id @default(uuid()) @db.Uuid
+  itemId          String           @db.Uuid
+  batchId         String           @db.Uuid
+  workerAddress   String           @db.VarChar(42)
+  workerRoot      String?          @db.VarChar(42)
+  isTrial         Boolean          @default(false)
+  humanCorrection Json
+  status          SubmissionStatus @default(PENDING_REVIEW)
+  /// Equals `itemId` while the submission is not rejected: at most one live submission per item, so at
+  /// most one accepted submission per item and the batch payout never exceeds its reservation.
+  activeItemId    String?          @unique @db.Uuid
+  reviewerAddress String?          @db.VarChar(42)
+  reviewerRoot    String?          @db.VarChar(42)
+  reviewerScore   Int?
+  reviewerNotes   String?
+  reviewedAt      DateTime?        @db.Timestamptz(3)
+  qaPassed        Boolean?
+  finalizedAt     DateTime?        @db.Timestamptz(3)
+  rewardWei       Decimal          @db.Decimal(78, 0)
+  epochId         Int?
+  claimTxHash     String?          @db.VarChar(66)
+  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+
+  item   TaskItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batch  TaskBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  worker User      @relation(fields: [workerAddress], references: [walletAddress])
+  votes  QaVote[]
+
+  @@unique([itemId, workerAddress])
+  @@index([status, createdAt])
+  @@index([status, reviewedAt])
+  @@index([status, finalizedAt])
+  @@index([batchId, status])
+  @@index([workerAddress, createdAt])
+  @@index([workerRoot, status])
+  @@index([reviewerRoot, status])
+  @@index([epochId])
+}
+
+/// QA vote; one per wallet and one per GoodID root on a submission.
+model QaVote {
+  id           String   @id @default(uuid()) @db.Uuid
+  submissionId String   @db.Uuid
+  qaAddress    String   @db.VarChar(42)
+  qaRoot       String?  @db.VarChar(42)
+  approve      Boolean
+  reason       String?
+  createdAt    DateTime @default(now()) @db.Timestamptz(3)
+
+  submission TaskSubmission @relation(fields: [submissionId], references: [id], onDelete: Restrict)
+
+  @@unique([submissionId, qaAddress])
+  @@unique([submissionId, qaRoot])
+  @@index([qaAddress, createdAt])
+  @@index([qaRoot])
+}
+
+/// Weekly earnings epoch; `id` is the Wallet Week id.
+model Epoch {
+  id           Int         @id
+  merkleRoot   String?     @db.VarChar(66)
+  totalWei     Decimal     @default(0) @db.Decimal(78, 0)
+  bonusWei     Decimal     @default(0) @db.Decimal(78, 0)
+  feeWei       Decimal     @default(0) @db.Decimal(78, 0)
+  status       EpochStatus @default(DRAFT)
+  settleTxHash String?     @db.VarChar(66)
+  claimableAt  DateTime?   @db.Timestamptz(3)
+  expiresAt    DateTime?   @db.Timestamptz(3)
+  createdAt    DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @db.Timestamptz(3)
+
+  allocations EpochAllocation[]
+
+  @@index([status])
+}
+
+/// Cumulative allocation of a wallet in an epoch, with its merkle proof and a UI breakdown.
+model EpochAllocation {
+  epochId        Int
+  walletAddress  String    @db.VarChar(42)
+  amountWei      Decimal   @db.Decimal(78, 0)
+  trialAmountWei Decimal   @default(0) @db.Decimal(78, 0)
+  proof          String[]
+  /// `{ tasks, reviews, qa, bonus }` as wei strings.
+  breakdown      Json
+  claimedTxHash  String?   @db.VarChar(66)
+  claimedAt      DateTime? @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @db.Timestamptz(3)
+
+  epoch Epoch @relation(fields: [epochId], references: [id], onDelete: Restrict)
+
+  @@id([epochId, walletAddress])
+  @@index([walletAddress, epochId])
+}
+
+/// Wallet Week progress (bit 0 = Monday ... bit 6 = Sunday). Bits are only ever OR-ed in atomically.
+model WalletWeekLog {
+  id                  String   @id @default(uuid()) @db.Uuid
+  walletAddress       String   @db.VarChar(42)
+  goodIdRoot          String?  @db.VarChar(42)
+  weekNumber          Int
+  mondayStakeTx       String?  @db.VarChar(66)
+  stakeAmountWei      Decimal? @db.Decimal(78, 0)
+  ubiClaimBitmask     Int      @default(0)
+  taskBitmask         Int      @default(0)
+  daysActiveBitmask   Int      @default(0)
+  fridayBonusEligible Boolean  @default(false)
+  fridayBonusClaimed  Boolean  @default(false)
+  slashedWei          Decimal? @db.Decimal(78, 0)
+  sundaySettledTx     String?  @db.VarChar(66)
+  createdAt           DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime @updatedAt @db.Timestamptz(3)
+
+  @@unique([walletAddress, weekNumber])
+  @@index([weekNumber])
+  @@index([goodIdRoot, weekNumber])
+}
+
+/// AI contributor agent registered in AgentRegistry by a verified human.
+model AgentRecord {
+  agentAddress     String      @id @db.VarChar(42)
+  ownerAddress     String      @db.VarChar(42)
+  ownerRoot        String      @db.VarChar(42)
+  name             String      @db.VarChar(100)
+  model            String      @db.VarChar(100)
+  status           AgentStatus @default(ACTIVE)
+  bondWei          Decimal     @db.Decimal(78, 0)
+  metadataHash     String?     @db.VarChar(66)
+  registeredTxHash String?     @db.VarChar(66)
+  createdAt        DateTime    @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime    @updatedAt @db.Timestamptz(3)
+
+  @@index([ownerRoot])
+  @@index([ownerAddress])
+  @@index([status])
+}
+
+/// Telegram deep-link token: only its sha256 is stored; single use within 10 minutes.
+model TelegramLinkToken {
+  tokenHash     String    @id @db.VarChar(64)
+  walletAddress String    @db.VarChar(42)
+  expiresAt     DateTime  @db.Timestamptz(3)
+  usedAt        DateTime? @db.Timestamptz(3)
+  createdAt     DateTime  @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [walletAddress], references: [walletAddress], onDelete: Cascade)
+
+  @@index([walletAddress])
+  @@index([expiresAt])
+}
+
+/// SIWE nonce: single use within 10 minutes.
+model AuthNonce {
+  nonce     String    @id @db.VarChar(96)
+  expiresAt DateTime  @db.Timestamptz(3)
+  usedAt    DateTime? @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @db.Timestamptz(3)
+
+  @@index([expiresAt])
+}
+
+/// Indexed log of a VeriWork contract (or a G$ Transfer touching one). `txFrom`/`txTo` identify direct users.
+model OnchainEvent {
+  id              BigInt   @id @default(autoincrement())
+  chainId         Int
+  contractAddress String   @db.VarChar(42)
+  eventName       String   @db.VarChar(64)
+  blockNumber     BigInt
+  blockTimestamp  DateTime @db.Timestamptz(3)
+  txHash          String   @db.VarChar(66)
+  logIndex        Int
+  txFrom          String?  @db.VarChar(42)
+  txTo            String?  @db.VarChar(42)
+  args            Json
+  createdAt       DateTime @default(now()) @db.Timestamptz(3)
+
+  @@unique([chainId, txHash, logIndex])
+  @@index([chainId, eventName, blockTimestamp])
+  @@index([chainId, contractAddress, blockNumber])
+  @@index([chainId, txTo, blockTimestamp])
+  @@index([txFrom, blockTimestamp])
+  @@index([blockTimestamp])
+}
+
+model IndexerCheckpoint {
+  id        String   @id @db.VarChar(100)
+  lastBlock BigInt
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+}
+
+/// Fixed-window rate limit counter (atomic upsert-increment).
+model RateLimitBucket {
+  key         String   @db.VarChar(200)
+  windowStart DateTime @db.Timestamptz(3)
+  count       Int      @default(0)
+
+  @@id([key, windowStart])
+  @@index([windowStart])
+}
+
+/// Outbound notification ledger: the unique `dedupeKey` makes every notification send at most once.
+model NotificationLog {
+  id            String             @id @default(uuid()) @db.Uuid
+  dedupeKey     String             @unique @db.VarChar(200)
+  kind          String             @db.VarChar(64)
+  walletAddress String?            @db.VarChar(42)
+  chatId        BigInt?
+  status        NotificationStatus @default(PENDING)
+  error         String?
+  createdAt     DateTime           @default(now()) @db.Timestamptz(3)
+  sentAt        DateTime?          @db.Timestamptz(3)
+
+  @@index([kind, createdAt])
+  @@index([walletAddress, createdAt])
+}
+
+model AlertLog {
+  id             String        @id @default(uuid()) @db.Uuid
+  severity       AlertSeverity
+  source         String        @db.VarChar(64)
+  message        String
+  details        Json?
+  createdAt      DateTime      @default(now()) @db.Timestamptz(3)
+  acknowledgedAt DateTime?     @db.Timestamptz(3)
+
+  @@index([createdAt])
+  @@index([source, createdAt])
+  @@index([severity, createdAt])
+}
+
+/// G$ price sample, USD per G$ scaled by 1e18 (Mento `currentPrice` scale).
+model PriceSample {
+  id          BigInt      @id @default(autoincrement())
+  source      PriceSource
+  priceE18    Decimal     @db.Decimal(78, 0)
+  blockNumber BigInt?
+  sampledAt   DateTime    @db.Timestamptz(3)
+
+  @@index([source, sampledAt])
+}
+
+/// Audit log of guardian (sentinel) actions: pause and veto only.
+model GuardianAction {
+  id              String               @id @default(uuid()) @db.Uuid
+  kind            GuardianActionKind
+  contractAddress String               @db.VarChar(42)
+  epochId         Int?
+  reason          String
+  status          GuardianActionStatus @default(PENDING)
+  txHash          String?              @db.VarChar(66)
+  error           String?
+  createdAt       DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime             @updatedAt @db.Timestamptz(3)
+
+  @@index([kind, contractAddress, createdAt])
+  @@index([createdAt])
+}
+
+/// Gas top-up request (REQUESTED -> SENT | FAILED). `openRootKey` (= root while REQUESTED) allows one open
+/// request per root; `(goodIdRoot, ubiDay, dailySlot)` with slot 1..3 caps requests at 3 per root per UBI day.
+model GasTopUp {
+  id            String         @id @default(uuid()) @db.Uuid
+  walletAddress String         @db.VarChar(42)
+  goodIdRoot    String         @db.VarChar(42)
+  ubiDay        Int
+  dailySlot     Int
+  openRootKey   String?        @unique @db.VarChar(42)
+  status        GasTopUpStatus @default(REQUESTED)
+  balanceWei    Decimal        @db.Decimal(78, 0)
+  txHash        String?        @db.VarChar(66)
+  failureReason String?
+  attempts      Int            @default(0)
+  lockedUntil   DateTime?      @db.Timestamptz(3)
+  requestedAt   DateTime       @default(now()) @db.Timestamptz(3)
+  processedAt   DateTime?      @db.Timestamptz(3)
+
+  @@unique([goodIdRoot, ubiDay, dailySlot])
+  @@index([status, requestedAt])
+  @@index([walletAddress, requestedAt])
+}

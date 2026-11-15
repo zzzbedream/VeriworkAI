@@ -4,6 +4,13 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts", "*.config.ts", "prisma.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "scripts/**/*.ts",
+    "prisma/**/*.ts",
+    "*.config.ts",
+    "prisma.config.ts"
+  ],
   "exclude": ["node_modules", "dist", "coverage"]
 }
