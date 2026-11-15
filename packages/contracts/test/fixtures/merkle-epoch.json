@@ -1,0 +1,74 @@
+{
+  "epochId": 2966,
+  "leafTypes": [
+    "uint256",
+    "address",
+    "uint256",
+    "uint256"
+  ],
+  "root": "0xa30d55339a6436ef207a96a78518b82da9233d28bc2c760e92a5bf35c408405b",
+  "entries": [
+    {
+      "account": "0xB2F17f55e1378BFbeAC04c7302d2e52a1a83E00A",
+      "amount": "500000000000000000000",
+      "amountHex": "0x1b1ae4d6e2ef500000",
+      "trialAmount": "0",
+      "trialAmountHex": "0x0",
+      "leaf": "0x4eafbeeae10b8da1996009d30c3f5bec64aad143f18301b91f62c4f6947bcc70",
+      "proof": [
+        "0x4ae0d2557dae7147e8a05d84008a03893d39b51b3c9c65250dd6c75e9e960a3b",
+        "0xd19c7b71b760f0a400c7b93864c3454f2909f96445924455453d16e030c8ae41",
+        "0x27f86afb390f84a51d2cfaa46200a08a2f02d25abfab05f3b64193048116993d"
+      ]
+    },
+    {
+      "account": "0x68dcf65c7AbAe41a53b686eFe44889F8Bf93B277",
+      "amount": "300000000000000000000",
+      "amountHex": "0x1043561a8829300000",
+      "trialAmount": "100000000000000000000",
+      "trialAmountHex": "0x56bc75e2d63100000",
+      "leaf": "0x4ae0d2557dae7147e8a05d84008a03893d39b51b3c9c65250dd6c75e9e960a3b",
+      "proof": [
+        "0x4eafbeeae10b8da1996009d30c3f5bec64aad143f18301b91f62c4f6947bcc70",
+        "0xd19c7b71b760f0a400c7b93864c3454f2909f96445924455453d16e030c8ae41",
+        "0x27f86afb390f84a51d2cfaa46200a08a2f02d25abfab05f3b64193048116993d"
+      ]
+    },
+    {
+      "account": "0x1111111111111111111111111111111111111111",
+      "amount": "150000000000000000000",
+      "amountHex": "0x821ab0d4414980000",
+      "trialAmount": "150000000000000000000",
+      "trialAmountHex": "0x821ab0d4414980000",
+      "leaf": "0xa9a200704163bbaa9ebdf2f05aaba3be5005f730a0d3173b008a9101c3a080dc",
+      "proof": [
+        "0x8f4441a92339bcdad1a95839ca9f702073a1423635a20583a509d3e74e544dd2",
+        "0xa3fbd159e41a7deb098f0905383a26ee32c8dad4245659a490fb1eca866e948d"
+      ]
+    },
+    {
+      "account": "0x2222222222222222222222222222222222222222",
+      "amount": "1000000000000000000000",
+      "amountHex": "0x3635c9adc5dea00000",
+      "trialAmount": "0",
+      "trialAmountHex": "0x0",
+      "leaf": "0xd19c7b71b760f0a400c7b93864c3454f2909f96445924455453d16e030c8ae41",
+      "proof": [
+        "0x594a47da46c46e898ca463cb6f23adb3cd1e0fb4ffb315a6a9238633f48d0f8a",
+        "0x27f86afb390f84a51d2cfaa46200a08a2f02d25abfab05f3b64193048116993d"
+      ]
+    },
+    {
+      "account": "0x3333333333333333333333333333333333333333",
+      "amount": "1",
+      "amountHex": "0x1",
+      "trialAmount": "0",
+      "trialAmountHex": "0x0",
+      "leaf": "0x8f4441a92339bcdad1a95839ca9f702073a1423635a20583a509d3e74e544dd2",
+      "proof": [
+        "0xa9a200704163bbaa9ebdf2f05aaba3be5005f730a0d3173b008a9101c3a080dc",
+        "0xa3fbd159e41a7deb098f0905383a26ee32c8dad4245659a490fb1eca866e948d"
+      ]
+    }
+  ]
+}
