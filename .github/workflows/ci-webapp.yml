@@ -1,0 +1,72 @@
+name: ci-webapp
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-webapp-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24.22.3
+  PNPM_VERSION: 11.28.12
+  NEXT_PUBLIC_CHAIN_ID: '42220'
+  NEXT_PUBLIC_APP_URL: http://localhost:3100
+  NEXT_PUBLIC_CELO_RPC_URL: https://forno.celo.org
+  NEXT_PUBLIC_VERIWORK_CORE_ADDRESS: '0x0000000000000000000000000000000000000001'
+  NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS: '0x0000000000000000000000000000000000000002'
+
+jobs:
+  typescript:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm turbo run typecheck --filter=!@veriwork/contracts
+      - run: pnpm turbo run lint --filter=!@veriwork/contracts
+      - run: pnpm turbo run test --filter=!@veriwork/contracts
+        env:
+          CI: 'true'
+      - run: pnpm turbo run build --filter=@veriwork/web-app --filter=@veriwork/agent-worker
+
+  e2e:
+    needs: typescript
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm --filter @veriwork/web-app exec playwright install --with-deps chromium
+      - run: pnpm turbo run build --filter=@veriwork/web-app
+        env:
+          E2E_MODE: '1'
+      - run: pnpm --filter @veriwork/web-app test:e2e
+        env:
+          CI: 'true'
+          E2E_MODE: '1'
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: packages/web-app/playwright-report
+          retention-days: 7
