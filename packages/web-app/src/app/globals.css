@@ -1,1 +1,84 @@
 @import 'tailwindcss';
+
+/* "Field notebook" design tokens. Light is the default; dark mirrors it on charcoal. */
+:root {
+  --paper: #f5f1e8;
+  --paper-raised: #fffdf8;
+  --ink: #17140f;
+  --ink-soft: #4a443a;
+  --rule: rgb(23 20 15 / 0.08);
+  --verified: #0f766e;
+  --verified-soft: #d5ece9;
+  --earn: #e3a008;
+  --earn-soft: #fff4d6;
+  --alert: #c2410c;
+  --shadow: rgb(23 20 15 / 0.16);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14130f;
+    --paper-raised: #1e1c17;
+    --ink: #f5f1e8;
+    --ink-soft: #c9c2b4;
+    --rule: rgb(245 241 232 / 0.08);
+    --verified: #2dd4bf;
+    --verified-soft: #12302d;
+    --earn: #f5b82e;
+    --earn-soft: #2e2512;
+    --alert: #fb923c;
+    --shadow: rgb(0 0 0 / 0.45);
+  }
+}
+
+@theme inline {
+  --color-paper: var(--paper);
+  --color-paper-raised: var(--paper-raised);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-rule: var(--rule);
+  --color-verified: var(--verified);
+  --color-verified-soft: var(--verified-soft);
+  --color-earn: var(--earn);
+  --color-earn-soft: var(--earn-soft);
+  --color-alert: var(--alert);
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-sans: var(--font-manrope), 'Segoe UI', system-ui, sans-serif;
+}
+
+html {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--paper);
+  background-image: linear-gradient(var(--rule) 1px, transparent 1px);
+  background-size: 100% 2.25rem;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Index-card surface with an offset shadow, used for every "piece of work". */
+.card {
+  background: var(--paper-raised);
+  border: 1px solid var(--rule);
+  border-radius: 1rem;
+  box-shadow: 6px 8px 0 var(--shadow);
+}
+
+:focus-visible {
+  outline: 3px solid var(--verified);
+  outline-offset: 3px;
+  border-radius: 0.5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .lift {
+    transition: transform 160ms ease-out, box-shadow 160ms ease-out;
+  }
+  .lift:hover {
+    transform: translate(-2px, -3px);
+    box-shadow: 9px 12px 0 var(--shadow);
+  }
+}
