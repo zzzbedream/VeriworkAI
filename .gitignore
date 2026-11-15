@@ -17,6 +17,29 @@ next-env.d.ts
 .env.*
 !.env.example
 
+# keys and secret material (never commit)
+*.pem
+*.key
+*.p12
+*.keystore
+keystore/
+keystores/
+.secrets/
+secrets/
+*.secret
+
+# internal, local-only documents (planning, AI-assistant context, budgets, drafts)
+CLAUDE.md
+CLAUDE.local.md
+*.local.md
+.claude/
+docs/specs/
+docs/internal/
+docs/PRD-REVIEW.md
+docs/LAUNCH-COSTS.md
+docs/goodbuilders/
+docs/runbooks/
+
 # foundry
 packages/contracts/out/
 packages/contracts/cache/
