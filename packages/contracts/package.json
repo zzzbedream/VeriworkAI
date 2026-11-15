@@ -1,0 +1,14 @@
+{
+  "name": "@veriwork/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VeriWork Solidity contracts (Foundry) for Celo mainnet.",
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "test:fork": "forge test --match-path \"test/fork/*\" -vvv",
+    "coverage": "forge coverage --report summary --no-match-coverage \"(test|script)/\"",
+    "fmt": "forge fmt",
+    "lint": "forge fmt --check"
+  }
+}

@@ -1,0 +1,15 @@
+node_modules
+pnpm-lock.yaml
+.next
+.turbo
+dist
+coverage
+playwright-report
+test-results
+packages/contracts/lib
+packages/contracts/out
+packages/contracts/cache
+packages/contracts/broadcast
+packages/database/src/generated
+packages/shared/src/abis/generated
+*.sol
