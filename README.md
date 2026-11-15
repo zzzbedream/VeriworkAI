@@ -48,7 +48,9 @@ UBI days follow GoodDollar's 12:00 UTC boundary.
   double-dip with several wallets.
 - **Rolling-window circuit breaker**: every outflow passes through 24 hourly buckets, which makes a
   fixed-reset bypass impossible.
-- **Guardian pause and epoch veto** by an automated sentinel. Only the admin Safe can unpause or re-root.
+- **Guardian pause and epoch veto** by an automated sentinel. Only the admin can unpause or re-root. During
+  the public demo the admin is a founder-held key; before sponsor funds are accepted it moves to a 2-of-2
+  multisig.
 - **No Superfluid Super App callbacks and no DEX dependency.**
 - **Pull payments only**, and `balance >= accounted` invariants, because G$ is an admin-controlled token
   (pause, blocklist, fees).

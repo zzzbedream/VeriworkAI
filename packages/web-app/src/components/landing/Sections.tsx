@@ -50,7 +50,7 @@ export function ForSponsors() {
 const SAFETY = [
   'Identity is checked at every payout, not just at sign-up.',
   'A rolling 24-hour circuit breaker limits how much can ever leave the contracts.',
-  'An automated guardian can pause instantly; only a 2-of-2 Safe can resume.',
+  'An automated guardian can pause instantly; only the admin can resume.',
   'Open source, with fuzz, invariant and Celo-mainnet-fork tests.',
 ] as const;
 

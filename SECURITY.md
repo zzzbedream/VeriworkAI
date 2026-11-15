@@ -23,8 +23,10 @@ risk until an external audit is published.
    There are no fixed-window resets.
 4. **UBI share.** Exactly 20% (`UBI_SHARE_BPS = 2000`, constant) of every platform fee goes to GoodDollar's
    UBIScheme in the settlement transaction.
-5. **Pause and veto.** The guardian role can pause and veto an epoch. Only the admin Safe can unpause or
-   re-root. Merkle amounts are cumulative, so re-rooting never double-pays.
+5. **Pause and veto.** The guardian role can pause and veto an epoch. Only the admin can unpause or
+   re-root. Merkle amounts are cumulative, so re-rooting never double-pays. During the public demo
+   (only a few dollars in the contracts) the admin is a single founder-held key. Before sponsor funds are
+   accepted, `DEFAULT_ADMIN_ROLE` moves to a 2-of-2 Safe (`grantRole` and then `renounceRole`).
 6. **No external callbacks.** Payouts use plain ERC-20 transfers. There are no Superfluid Super Apps and no DEX
    dependency.
 
