@@ -5,8 +5,8 @@
 AI labs need human feedback they can trust: one real person per seat, not bot farms. GoodDollar already has
 more than a million face-verified humans who claim UBI every day. VeriWork connects the two. Sponsors fund
 labeling and RLHF campaigns in G$. An AI agent drafts every item, verified humans correct, review and
-QA-approve it, and once a week everyone collects their earnings on Celo. 20% of every platform fee goes to the
-GoodDollar UBI pool.
+QA-approve it, and once a week everyone collects their earnings on Celo. **20% of every platform fee goes to
+the GoodDollar UBI pool.**
 
 ```mermaid
 flowchart LR
@@ -21,42 +21,78 @@ flowchart LR
   C -->|20% of fees, same tx| U[GoodDollar UBIScheme]
 ```
 
-## What makes it safe
+## How G$ is integrated
 
-- **Identity boundary on-chain**: every paid action resolves `getWhitelistedRoot(msg.sender)` at the block of
-  the action. The GoodID root is the one-person key, so connected wallets cannot double-dip.
-- **Rolling-window circuit breaker**: every outflow passes 24 hourly buckets. A fixed-reset bypass (the
-  Sept 4, 2026 attack pattern) is impossible.
-- **Guardian pause and epoch veto** by an automated sentinel that watches the reserve price, outflows and
-  posted merkle roots. Only the admin Safe can unpause or re-root.
-- **No Super App callbacks, no DEX dependency, pull payments only, `balance >= accounted` invariants**,
-  because G$ is admin-controlled (pause, blocklist, fees).
+| Season 5 option | In VeriWork |
+|---|---|
+| Identity SDK | Every paid action checks `getWhitelistedRoot` on-chain at the block of the action. The GoodID root is the one-person key for deposits, trial rewards, agent caps and reviewer conflict checks |
+| Face verification + UBI claim | Verification is asked for after two free trial tasks. "Claim today's G$" is part of the daily checklist |
+| UBI Pool fees | 20% of every fee (a contract constant) is transferred to UBIScheme in the same transaction that settles sponsor batches. Slashed deposits go 100% to UBI |
+| Pay in G$ | Campaigns, upskill modules and AI-agent bonds are paid in G$, with EIP-2612 permit (one signature plus one transaction) |
+
+## The Wallet Week
+
+UBI days follow GoodDollar's 12:00 UTC boundary.
+
+| Day | Activity |
+|---|---|
+| Monday | Refundable 150 G$ deposit |
+| Monday to Friday | Claim UBI and finish a micro-batch |
+| Friday | +400 G$ five-day bonus |
+| Saturday | QA closes |
+| Sunday | Collect the week's earnings and get the deposit back in one transaction |
+
+## Security model
+
+- **Identity boundary on-chain**: connected wallets resolve to their GoodID root, so one person cannot
+  double-dip with several wallets.
+- **Rolling-window circuit breaker**: every outflow passes through 24 hourly buckets, which makes a
+  fixed-reset bypass impossible.
+- **Guardian pause and epoch veto** by an automated sentinel. Only the admin Safe can unpause or re-root.
+- **No Superfluid Super App callbacks and no DEX dependency.**
+- **Pull payments only**, and `balance >= accounted` invariants, because G$ is an admin-controlled token
+  (pause, blocklist, fees).
+
+Details and responsible disclosure: [SECURITY.md](SECURITY.md).
+
+## Deployed contracts (Celo mainnet, chainId 42220)
+
+| Contract | Address |
+|---|---|
+| VeriWorkCore | _pending deployment_ |
+| AgentRegistry | _pending deployment_ |
+
+Public metrics: `/dashboard` and `/api/metrics/season5`. They use the GoodBuilders metric definitions, where users
+are EOAs that transact directly with the contracts above.
 
 ## Repository
 
 | Package | Description |
 |---|---|
-| [`packages/contracts`](packages/contracts) | Foundry: `VeriWorkCore`, `AgentRegistry`, breaker, guardian pause. Unit, fuzz, invariant and Celo-fork tests |
-| [`packages/shared`](packages/shared) | Constants, verified addresses, UBI-day/week math, merkle encoding, pipeline state machine, API schemas, ABIs |
+| [`packages/contracts`](packages/contracts) | Foundry: `VeriWorkCore`, `AgentRegistry`, breaker, guardian pause; unit, fuzz, invariant and Celo-fork tests |
+| [`packages/shared`](packages/shared) | Constants, verified addresses, UBI-day and week math, merkle encoding, pipeline state machine, API schemas, ABIs |
 | [`packages/database`](packages/database) | Prisma 7 schema, repositories, test database helper |
-| [`packages/agent-worker`](packages/agent-worker) | AI contributor (Claude), pipeline automation, weekly settlement, indexer, sentinel, Telegram bot, cron |
-| [`packages/web-app`](packages/web-app) | Next.js app: trial funnel, work UI, Wallet Week, reviewer/QA queues, B2B portal, public dashboard |
-
+| [`packages/agent-worker`](packages/agent-worker) | AI contributor, pipeline automation, weekly settlement, indexer, sentinel, Telegram notifications |
+| [`packages/web-app`](packages/web-app) | Next.js app: trial funnel, work UI, Wallet Week, reviewer and QA queues, sponsor portal, public dashboard |
 
 ## Quickstart
 
 ```bash
-pnpm install                      # pnpm 11 (auto-selected via devEngines), Node 24
-cp .env.example .env              # fill in the values you need
+pnpm install                      # pnpm 11 (selected via devEngines), Node 24
+cp .env.example .env              # fill in what you need
 pnpm db:generate
-pnpm test                         # all packages (contracts need Foundry)
+pnpm test
 cd packages/contracts && forge test
 RUN_FORK_TESTS=true forge test --match-path "test/fork/*" -vvv   # against Celo mainnet state
 pnpm --filter @veriwork/web-app dev
 pnpm --filter @veriwork/agent-worker dev
 ```
 
+## Team
+
+- **Lucas Cifuentes**, CEO
+- **Cristian**, CTO
 
 ## License
 
-MIT
+[MIT](LICENSE)

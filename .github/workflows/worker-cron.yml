@@ -1,0 +1,62 @@
+name: worker-cron
+
+# Runs the VeriWork agent-worker once every 15 minutes (WORKER_MODE=once) on GitHub-hosted runners:
+# pipeline automation, weekly settlement when due, indexer, sentinel, faucet relayer and Telegram
+# notifications. Enable it by setting the repository variable WORKER_CRON_ENABLED=true and the secrets below.
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (no transactions, no messages)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: worker-cron
+  cancel-in-progress: false
+
+jobs:
+  run-once:
+    if: ${{ vars.WORKER_CRON_ENABLED == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    env:
+      NODE_ENV: production
+      WORKER_MODE: once
+      CHAIN_ID: ${{ vars.CHAIN_ID || '42220' }}
+      CELO_RPC_URL: ${{ secrets.CELO_RPC_URL || 'https://forno.celo.org' }}
+      CELO_RPC_FALLBACK_URLS: https://forno.celo.org
+      VERIWORK_CORE_ADDRESS: ${{ vars.VERIWORK_CORE_ADDRESS }}
+      AGENT_REGISTRY_ADDRESS: ${{ vars.AGENT_REGISTRY_ADDRESS }}
+      WEB_APP_URL: ${{ vars.WEB_APP_URL }}
+      AI_PROVIDER: ${{ vars.AI_PROVIDER || 'fixture' }}
+      AI_MODEL: ${{ vars.AI_MODEL || 'claude-opus-5-5' }}
+      AI_EFFORT: ${{ vars.AI_EFFORT || 'medium' }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      OPERATOR_PRIVATE_KEY: ${{ secrets.OPERATOR_PRIVATE_KEY }}
+      GUARDIAN_PRIVATE_KEY: ${{ secrets.GUARDIAN_PRIVATE_KEY }}
+      AI_AGENT_PRIVATE_KEY: ${{ secrets.AI_AGENT_PRIVATE_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      COINGECKO_API_KEY: ${{ secrets.COINGECKO_API_KEY }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.12
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm turbo run build --filter=@veriwork/agent-worker
+      - name: Run due jobs once
+        run: node packages/agent-worker/dist/index.js --once ${{ inputs.dry_run && '--dry-run' || '' }}
