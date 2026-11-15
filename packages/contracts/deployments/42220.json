@@ -1,0 +1,30 @@
+{
+  "block": 82881432,
+  "chainId": 42220,
+  "contracts": {
+    "AgentRegistry": "0x3bAda340d038cA32D6a807D35071CB098f1431C1",
+    "VeriWorkCore": "0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a"
+  },
+  "deployer": "0x13d797F8c729A577FA3a2ab8E9B4bb36927DA88C",
+  "parameters": {
+    "admin": "0x4e5A7B9F7F66c208bDDeD352356B33a3A634AD6D",
+    "agentBond": "250000000000000000000",
+    "coreMaxRollingOutflow": "5000000000000000000000000",
+    "gToken": "0x62B8B11039FcfE5aB0C56E502b1C372A3d2a9c7A",
+    "guardian": "0xa3CC9FDEea427A67C39D77927997df8937A97708",
+    "identity": "0xC361A6E67822a0EDc17D899227dd9FC50BD62F42",
+    "modulePrices": {
+      "1": "100000000000000000000",
+      "2": "150000000000000000000",
+      "3": "200000000000000000000"
+    },
+    "operator": "0xB06B942085DB10245DF21E820CfBe57977C8571f",
+    "platformFeeBps": 1000,
+    "registryMaxRollingOutflow": "250000000000000000000000",
+    "stakeAmount": "150000000000000000000",
+    "treasury": "0x4e5A7B9F7F66c208bDDeD352356B33a3A634AD6D",
+    "ubiRecipient": "0x43d72Ff17701B2DA814620735C39C620Ce0ea4A1"
+  },
+  "salt": "0xb6baf89034ecdf8de0c09d68ae005d958b91b4143f1c21a94d4cf90001ecf5f3",
+  "timestamp": 1794782190
+}

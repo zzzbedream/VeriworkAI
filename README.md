@@ -61,8 +61,8 @@ Details and responsible disclosure: [SECURITY.md](SECURITY.md).
 
 | Contract | Address |
 |---|---|
-| VeriWorkCore | _pending deployment_ |
-| AgentRegistry | _pending deployment_ |
+| VeriWorkCore | [`0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a`](https://celo.blockscout.com/address/0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a) (verified, Sourcify exact match) |
+| AgentRegistry | [`0x3bAda340d038cA32D6a807D35071CB098f1431C1`](https://celo.blockscout.com/address/0x3bAda340d038cA32D6a807D35071CB098f1431C1) (verified, Sourcify exact match) |
 
 Public metrics: `/dashboard` and `/api/metrics/season5`. They use the GoodBuilders metric definitions, where users
 are EOAs that transact directly with the contracts above.
