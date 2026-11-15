@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 500" role="img" aria-labelledby="t">
+  <title id="t">VeriWork AI — verified humans make AI better, paid in G$</title>
+  <rect width="1500" height="500" fill="#F5F1E8"/>
+  <g stroke="#17140F" stroke-opacity="0.06">
+    <path d="M0 100 H1500 M0 160 H1500 M0 220 H1500 M0 280 H1500 M0 340 H1500 M0 400 H1500"/>
+  </g>
+  <rect x="96" y="0" width="3" height="500" fill="#C2410C" opacity="0.35"/>
+  <g transform="translate(150 118)">
+    <rect width="96" height="96" rx="22" fill="#0F766E"/>
+    <path d="M24 50 L42 68 L74 30" fill="none" stroke="#F5F1E8" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <text x="270" y="190" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-size="92" fill="#17140F">VeriWork AI</text>
+  <text x="152" y="282" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#17140F">Verified humans make AI better.</text>
+  <text x="152" y="336" font-family="'Segoe UI', Arial, sans-serif" font-size="40" fill="#0F766E" font-weight="600">Paid weekly in G$ on Celo.</text>
+  <text x="152" y="420" font-family="'Segoe UI', Arial, sans-serif" font-size="24" fill="#17140F" opacity="0.7">GoodBuilders Season 5 · 20% of every fee goes to the GoodDollar UBI pool</text>
+  <g font-family="'Segoe UI', Arial, sans-serif" font-size="22" font-weight="600">
+    <g transform="translate(1000 70) rotate(-3)">
+      <rect width="360" height="92" rx="16" fill="#17140F" opacity="0.15" transform="translate(8 10)"/>
+      <rect width="360" height="92" rx="16" fill="#FFFFFF" stroke="#17140F" stroke-opacity="0.15"/>
+      <text x="24" y="40" fill="#17140F" opacity="0.55">1 · AI draft</text>
+      <text x="24" y="72" fill="#17140F">"Hola mundo" → "Hello world"</text>
+    </g>
+    <g transform="translate(1040 188) rotate(2)">
+      <rect width="360" height="92" rx="16" fill="#17140F" opacity="0.15" transform="translate(8 10)"/>
+      <rect width="360" height="92" rx="16" fill="#FFFFFF" stroke="#0F766E" stroke-width="3"/>
+      <text x="24" y="40" fill="#0F766E">2 · Verified human fixes it</text>
+      <text x="24" y="72" fill="#17140F">QA 2-of-3 ✓ ✓ ✓</text>
+    </g>
+    <g transform="translate(1010 306) rotate(-2)">
+      <rect width="360" height="92" rx="16" fill="#17140F" opacity="0.15" transform="translate(8 10)"/>
+      <rect width="360" height="92" rx="16" fill="#FFF7E0" stroke="#E3A008" stroke-width="3"/>
+      <text x="24" y="40" fill="#8A5A00">3 · Sunday: collect your week</text>
+      <text x="24" y="72" fill="#17140F">+ G$ to your wallet</text>
+    </g>
+  </g>
+</svg>
