@@ -61,9 +61,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm db:generate
       - run: pnpm --filter @veriwork/web-app exec playwright install --with-deps chromium
-      - run: pnpm turbo run build --filter=@veriwork/web-app
-        env:
-          E2E_MODE: '1'
+      # The e2e global setup builds its own isolated E2E bundle (NEXT_DIST_DIR), so no separate build step.
       - run: pnpm --filter @veriwork/web-app test:e2e
         env:
           CI: 'true'
