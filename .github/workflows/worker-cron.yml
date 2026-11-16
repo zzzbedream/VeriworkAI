@@ -7,8 +7,9 @@ name: worker-cron
 # and every third-party action is pinned to a full commit SHA.
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
+  # The 15-minute schedule is enabled once the worker ships (milestone 1):
+  # schedule:
+  #   - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:

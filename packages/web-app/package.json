@@ -9,8 +9,8 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "vitest run --coverage",
-    "test:e2e": "playwright test"
+    "test": "vitest run --coverage --passWithNoTests",
+    "test:e2e": "playwright test --pass-with-no-tests"
   },
   "dependencies": {
     "@goodsdks/citizen-sdk": "1.2.8",

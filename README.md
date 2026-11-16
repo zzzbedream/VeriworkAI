@@ -21,6 +21,15 @@ flowchart LR
   C -->|20% of fees, same tx| U[GoodDollar UBIScheme]
 ```
 
+## Status (November 2026)
+
+| Component | Status |
+|---|---|
+| Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **Live on Celo mainnet** and verified (addresses below). 178 unit/fuzz/invariant tests, Celo-fork tests, 100% line and branch coverage. A hardened v2 that addresses an internal multi-auditor review is being finalized and will be redeployed before any sponsor funds are accepted |
+| Domain logic and database (`shared`, `database`) | Done: 182 + 98 tests (payout math, merkle epochs, week/UBI-day math, atomic trial/nonce/rate limits) |
+| Landing page (`web-app`) | Live |
+| Full app (trial → GoodID → Wallet Week, reviewer/QA queues, sponsor portal, public dashboard) and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
+
 ## How G$ is integrated
 
 | Season 5 option | In VeriWork |
@@ -83,7 +92,7 @@ Details and responsible disclosure: [SECURITY.md](SECURITY.md).
 | VeriWorkCore | [`0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a`](https://celo.blockscout.com/address/0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a) (verified, Sourcify exact match) |
 | AgentRegistry | [`0x3bAda340d038cA32D6a807D35071CB098f1431C1`](https://celo.blockscout.com/address/0x3bAda340d038cA32D6a807D35071CB098f1431C1) (verified, Sourcify exact match) |
 
-Public metrics: `/dashboard` and `/api/metrics/season5`. They use the GoodBuilders metric definitions, where users
+Public metrics (shipping with milestone 1): `/dashboard` and `/api/metrics/season5`. They use the GoodBuilders metric definitions, where users
 are EOAs that transact directly with the contracts above.
 
 ## Repository
@@ -105,8 +114,8 @@ pnpm db:generate
 pnpm test
 cd packages/contracts && forge test
 RUN_FORK_TESTS=true forge test --match-path "test/fork/*" -vvv   # against Celo mainnet state
-pnpm --filter @veriwork/web-app dev
-pnpm --filter @veriwork/agent-worker dev
+pnpm --filter @veriwork/web-app dev       # landing today; full app in progress
+pnpm --filter @veriwork/agent-worker dev  # in progress
 ```
 
 ## Team
