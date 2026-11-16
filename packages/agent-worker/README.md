@@ -152,7 +152,7 @@ pnpm --filter @veriwork/agent-worker seed:demo -- --review-weeks 2              
 | `TELEGRAM_ADMIN_CHAT_ID`                                   |                                 | receives WARNING / CRITICAL alerts                                       |
 | `INDEXER_START_BLOCK`                                      | v2 deploy block                 | first block indexed when there is no checkpoint                          |
 | `INDEXER_MAX_CHUNKS_PER_RUN`                               | `20`                            | 2,000-block ranges per run                                               |
-| `INDEXER_CONFIRMATIONS`                                    | `3`                             | blocks kept behind the head                                              |
+| `INDEXER_CONFIRMATIONS`                                    | `30`                            | blocks kept behind the head (forno nodes can trail it)                   |
 | `BATCH_REVIEW_WEEKS` / `BATCH_MIN_REVIEW_HOURS`            | `1` / `24`                      | batch deadline: the Saturday 12:00 UTC QA close at least this far out    |
 | `TX_RECEIPT_TIMEOUT_SECONDS`                               | `120`                           |                                                                          |
 
@@ -162,8 +162,8 @@ RPC URLs with credentials) is scrubbed from messages, fields and error stacks.
 
 ## GitHub Actions
 
-- `.github/workflows/worker-cron.yml` runs `--once` (the 15-minute schedule is commented out until
-  the secrets exist). A manual run defaults to a dry run.
+- `.github/workflows/worker-cron.yml` runs `--once` every 15 minutes. A manual run defaults to a
+  dry run.
 - `.github/workflows/worker-seed-demo.yml` runs `seed:demo` on demand, a dry run by default.
 
 Both only run from the default branch, share one concurrency group (one operator key, one nonce

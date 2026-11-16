@@ -32,8 +32,10 @@ flowchart LR
 |---|---|
 | Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **v2 live on Celo mainnet** and verified (addresses below). 245 unit/fuzz/invariant tests and 10 Celo-fork tests, 100% line and branch coverage, hardened after an internal multi-auditor review |
 | Domain logic and database (`shared`, `database`) | Done: 214 + 128 tests (pay rules, merkle epochs, week/UBI-day math, conflict-of-interest rules, atomic trial/nonce/rate limits). Migrations applied on Neon by the production build |
-| Web app, phase A (`web-app`) | **Live:** connect a Celo wallet (MetaMask, MiniPay, Valora), free SIWE sign-in, GoodID status with real expiry, GoodDollar face verification, daily UBI claim, and the [reviewers' guide](https://veriworkai.vercel.app/demo). 269 tests, per-request nonce CSP |
-| Trial tasks, review/QA queues, admin roles, demo campaign, Wallet Week and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
+| Web app (`web-app`) | **Live:** connect a Celo wallet (MetaMask, MiniPay, Valora), free SIWE sign-in, 2 free trial tasks, GoodID status with real expiry and GoodDollar face verification, work / review / blind QA queues, Wallet Week deposit (one permit signature) and Sunday collect, daily UBI claim, admin role grants, and the [reviewers' guide](https://veriworkai.vercel.app/demo). 390 tests (97% lines), Playwright E2E for the trial flow, per-request nonce CSP |
+| Worker (`agent-worker`) | **Live** on GitHub Actions every 15 minutes (`--once`): event indexer, price and outflow sentinels with guardian pause, epoch watchtower, signed AI drafts, consensus close, weekly merkle settlement with the 20% UBI share, stake refunds and slashing, Wallet Week bits, trial conversion and the Faucet gas relayer. 129 tests (96.75% lines) against a simulated Celo chain and a real Postgres |
+| Demo campaigns | **Live:** three team-funded campaigns (English-to-Spanish translation checks, review sentiment labels, RLHF answer rankings; 30 items, Pilot QA) paying 100 G$ per accepted item, 20 G$ per honest review and 10 G$ per honest QA vote. 5,280 G$ is escrowed in VeriWorkCore; QA closes Saturday, November 28, 12:00 UTC |
+| Public metrics dashboard, sponsor portal, Telegram bot commands, upskill modules and agent registration UI | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
 
 ## How G$ is integrated
 
@@ -121,8 +123,8 @@ pnpm db:generate
 pnpm test
 cd packages/contracts && forge test
 RUN_FORK_TESTS=true forge test --match-path "test/fork/*" -vvv   # against Celo mainnet state
-pnpm --filter @veriwork/web-app dev       # landing today; full app in progress
-pnpm --filter @veriwork/agent-worker dev  # in progress
+pnpm --filter @veriwork/web-app dev                  # the web app on http://localhost:3000
+pnpm build && node --env-file=.env packages/agent-worker/dist/index.js --once --dry-run  # every due worker job once, read-only
 ```
 
 ## Team

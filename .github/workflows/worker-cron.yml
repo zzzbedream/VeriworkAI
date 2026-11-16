@@ -9,9 +9,8 @@ name: worker-cron
 # only runs from the default branch get them, and every third-party action is pinned to a full SHA.
 
 on:
-  # The 15-minute schedule is enabled once the secrets are configured (see the worker README):
-  # schedule:
-  #   - cron: '*/15 * * * *'
+  schedule:
+    - cron: '*/15 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
