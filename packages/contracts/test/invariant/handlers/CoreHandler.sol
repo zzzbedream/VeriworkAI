@@ -12,13 +12,21 @@ import {MockGoodDollar} from "../../mocks/MockGoodDollar.sol";
 import {MockIdentity} from "../../mocks/MockIdentity.sol";
 import {MerkleHelper} from "../../utils/MerkleHelper.sol";
 
-/// @notice Random-walk driver for `VeriWorkCore`: campaigns, the batch pipeline, settlement, claims (verified,
-///         connected, expired and never-verified accounts), stakes, slashes, modules, flushes, veto/re-root, sweeps
-///         and time. Ghost variables are computed independently of the contract (plain arithmetic, not FeeMath).
+/// @notice Random-walk driver for `VeriWorkCore`: campaigns, the batch pipeline, settlement of the closing and of
+///         the previous week, claims (verified, connected, expired and never-verified accounts), stakes, slashes,
+///         modules, flushes, veto/re-root, cancel, expired sweeps, donations and partial surplus sweeps, rewards-pool
+///         withdrawals, the epoch cap, pause/unpause, a G$ fee switch (none, sender-pays, receiver-pays) and time.
+///         Ghost variables are computed independently of the contract (plain arithmetic on the handler's own
+///         inputs, never a value the contract computed).
 contract CoreHandler is CommonBase, StdCheats, StdUtils {
     bytes32 public constant CAMPAIGN = keccak256("invariant-campaign");
+    /// @notice Where the G$ fee formula would send fees; VeriWork transfers must never feed it.
+    address public constant FEE_SINK = address(0xFEE);
     uint256 internal constant BPS = 10_000;
     uint256 internal constant UBI_SHARE_BPS = 2000;
+    uint256 internal constant DISCRETIONARY_OUTFLOW_BPS = 3000;
+    /// @dev The stake every deposit pays (the walk never changes `stakeAmount`).
+    uint256 internal constant STAKE = 150e18;
 
     struct EpochRecord {
         uint256 epochId;
@@ -48,8 +56,17 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
 
     uint256 public ghostUbiExpected;
     uint256 public ghostTreasuryExpected;
+    /// @notice Σ deposited stakes - Σ expected slashes - Σ withdrawals, from the handler's own records.
+    uint256 public ghostTotalStaked;
+    mapping(uint256 weekId => mapping(address root => uint256)) internal ghostStakeOf;
     mapping(uint256 hour => uint256) public ghostOutflow;
     uint256 public maxWindowOutflow;
+    /// @notice Set if a sponsor withdrawal, rewards-pool withdrawal or surplus sweep left the window above 30% of
+    ///         the cap.
+    bool public discretionaryAboveShare;
+    uint256 public discretionaryOutflows;
+    uint256 public cancelledEpochs;
+    uint256 public previousWeekSettlements;
     bool public unverifiedClaimSucceeded;
     uint256 public successfulClaims;
     uint256 public rejectedUnverifiedClaims;
@@ -79,13 +96,13 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
     function fundCampaign(uint256 amount) external {
         amount = bound(amount, 1e18, 50_000e18);
         token.mint(sponsor, amount);
-        _call(sponsor, abi.encodeCall(core.fundCampaign, (CAMPAIGN, amount)));
+        _call(sponsor, abi.encodeCall(core.fundCampaign, (CAMPAIGN, amount, uint16(2000))));
     }
 
     function withdrawCampaign(uint256 amount) external {
         uint256 available = core.campaign(CAMPAIGN).available;
         if (available == 0) return;
-        _call(sponsor, abi.encodeCall(core.withdrawCampaign, (CAMPAIGN, bound(amount, 1, available))));
+        _discretionary(sponsor, abi.encodeCall(core.withdrawCampaign, (CAMPAIGN, bound(amount, 1, available))));
     }
 
     function openBatch(uint256 maxPayout) external {
@@ -120,27 +137,17 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
 
     // ------------------------------------------------------------------ settlement and claims
 
+    /// @notice Settles the closing week (warping to its Saturday 12:00 UTC when needed).
     function settle(uint256 bonusSeed, uint256 splitSeed) external {
         uint256 week = WeekMath.weekId(block.timestamp);
-        if (core.epoch(week).merkleRoot != bytes32(0)) return;
         uint256 settleableAt = WeekMath.weekStart(week) + WeekMath.SLASH_WINDOW_START;
         if (block.timestamp < settleableAt) vm.warp(settleableAt);
-        (bytes32[] memory ids, uint256 payoutTotal, uint256 feeTotal) = _consensusBatches();
-        uint256 bonus = bound(bonusSeed, 0, core.rewardsPool());
-        uint256 total = payoutTotal + bonus;
-        if (total == 0) return;
-        (uint256[] memory amounts, uint256[] memory trials) = _split(total, splitSeed);
-        bytes32[] memory leaves = _leaves(week, amounts, trials);
-        if (!_call(operator, abi.encodeCall(core.settleEpoch, (week, MerkleHelper.root(leaves), ids, bonus)))) return;
-        uint256 ubiShare = (feeTotal * UBI_SHARE_BPS) / BPS;
-        ghostUbiExpected += ubiShare;
-        ghostTreasuryExpected += feeTotal - ubiShare;
-        ++settledEpochs;
-        EpochRecord storage record = epochs.push();
-        record.epochId = week;
-        record.amounts = amounts;
-        record.trials = trials;
-        record.leaves = leaves;
+        _settle(week, bonusSeed, splitSeed);
+    }
+
+    /// @notice Settles the previous week, which stays settleable throughout the current one.
+    function settlePrevious(uint256 bonusSeed, uint256 splitSeed) external {
+        if (_settle(WeekMath.weekId(block.timestamp) - 1, bonusSeed, splitSeed)) ++previousWeekSettlements;
     }
 
     function claim(uint256 epochSeed, uint256 actorSeed) external {
@@ -188,26 +195,43 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
 
     function sweep(uint256 epochSeed) external {
         if (epochs.length == 0) return;
-        _call(address(this), abi.encodeCall(core.sweepExpiredEpoch, (epochs[epochSeed % epochs.length].epochId)));
+        _call(operator, abi.encodeCall(core.sweepExpiredEpoch, (epochs[epochSeed % epochs.length].epochId)));
+    }
+
+    /// @notice The guardian vetoes an epoch and the admin cancels it: its unclaimed remainder returns to the pool.
+    function cancel(uint256 epochSeed) external {
+        if (epochs.length == 0) return;
+        uint256 epochId = epochs[epochSeed % epochs.length].epochId;
+        _call(guardian, abi.encodeCall(core.vetoEpoch, (epochId)));
+        if (_call(admin, abi.encodeCall(core.cancelEpoch, (epochId)))) ++cancelledEpochs;
     }
 
     // ------------------------------------------------------------------ stake, modules, revenue
 
     function stake(uint256 actorSeed) external {
         uint256 week = WeekMath.weekId(block.timestamp);
-        if (!_call(actors[actorSeed % actors.length], abi.encodeCall(core.depositStake, ()))) return;
+        address account = actors[actorSeed % actors.length];
+        address root = identity.getWhitelistedRoot(account);
+        if (!_call(account, abi.encodeCall(core.depositStake, (STAKE)))) return;
+        ghostStakeOf[week][root] = STAKE;
+        ghostTotalStaked += STAKE;
         if (!stakeWeekSeen[week]) {
             stakeWeekSeen[week] = true;
             stakeWeeks.push(week);
         }
     }
 
+    /// @dev The expected slash is derived from the handler's own deposit record and `bps`, never read back from
+    ///      the contract, so a wrong slash amount breaks the UBI and stake invariants.
     function slash(uint256 rootSeed, uint256 bps) external {
         uint256 week = WeekMath.weekId(block.timestamp);
         address root = roots[rootSeed % roots.length];
         bps = bound(bps, 1, 5000);
+        uint256 expected = (ghostStakeOf[week][root] * bps) / BPS;
         if (!_call(operator, abi.encodeCall(core.slashStake, (week, root, uint16(bps), bytes32("qa"))))) return;
-        ghostUbiExpected += core.stake(week, root).slashed;
+        ghostUbiExpected += expected;
+        ghostTotalStaked -= expected;
+        ghostStakeOf[week][root] -= expected;
     }
 
     function withdrawStake(uint256 weekSeed, uint256 rootSeed) external {
@@ -215,22 +239,61 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
         uint256 week = stakeWeeks[weekSeed % stakeWeeks.length];
         address root = roots[rootSeed % roots.length];
         address account = core.stake(week, root).account;
-        if (account != address(0)) _call(account, abi.encodeCall(core.withdrawStake, (week, root)));
+        if (account == address(0)) return;
+        if (!_call(account, abi.encodeCall(core.withdrawStake, (week, root)))) return;
+        ghostTotalStaked -= ghostStakeOf[week][root];
+        ghostStakeOf[week][root] = 0;
     }
 
     function purchase(uint256 actorSeed, uint256 moduleSeed) external {
         uint256 moduleId = 1 + (moduleSeed % 3);
         uint256 price = core.modulePrice(moduleId);
-        if (!_call(actors[actorSeed % actors.length], abi.encodeCall(core.purchaseModule, (moduleId)))) return;
+        bytes memory data = abi.encodeCall(core.purchaseModule, (moduleId, price));
+        if (!_call(actors[actorSeed % actors.length], data)) return;
         uint256 ubiShare = (price * UBI_SHARE_BPS) / BPS;
         ghostUbiExpected += ubiShare;
         ghostTreasuryExpected += price - ubiShare;
+    }
+
+    /// @notice Installs a G$ transfer fee formula (the DAO's `setFormula`): none (half of the time), sender-pays or
+    ///         receiver-pays. While one is on, every transfer in or out would take part of someone's money, so all
+    ///         must fail closed.
+    function setTransferFee(uint256 mode, uint256 bps) external {
+        mode %= 4;
+        if (mode < 2) token.setFee(0, address(0));
+        else if (mode == 2) token.setSenderPaysFee(bound(bps, 1, 500), FEE_SINK);
+        else token.setFee(bound(bps, 1, 500), FEE_SINK);
     }
 
     function fundRewards(uint256 amount) external {
         amount = bound(amount, 1, 10_000e18);
         token.mint(sponsor, amount);
         _call(sponsor, abi.encodeCall(core.fundRewardsPool, (amount)));
+    }
+
+    function withdrawRewards(uint256 amount) external {
+        uint256 pool = core.rewardsPool();
+        if (pool == 0) return;
+        _discretionary(admin, abi.encodeCall(core.withdrawRewardsPool, (admin, bound(amount, 1, pool))));
+    }
+
+    /// @notice A stray transfer or stream credit (minted straight to the core, so no fee formula applies) followed by
+    ///         a partial admin sweep of the surplus.
+    function donateAndSweep(uint256 amount, uint256 part) external {
+        token.mint(address(core), bound(amount, 0, 5000e18));
+        uint256 available = core.surplus();
+        if (available == 0) return;
+        _discretionary(admin, abi.encodeCall(core.sweepSurplus, (admin, bound(part, 1, available))));
+    }
+
+    function setMaxEpochTotal(uint256 value) external {
+        _call(admin, abi.encodeCall(core.setMaxEpochTotal, (bound(value, 1000e18, 1_000_000e18))));
+    }
+
+    /// @notice The admin unpauses; otherwise the guardian pauses one time in four (so the walk is mostly live).
+    function togglePause(uint256 seed) external {
+        if (core.paused()) _call(admin, abi.encodeCall(core.unpause, ()));
+        else if (seed % 4 == 0) _call(guardian, abi.encodeCall(core.pause, ()));
     }
 
     function flush() external {
@@ -264,6 +327,37 @@ contract CoreHandler is CommonBase, StdCheats, StdUtils {
     }
 
     // ------------------------------------------------------------------ internals
+
+    function _settle(uint256 week, uint256 bonusSeed, uint256 splitSeed) internal returns (bool) {
+        if (core.epoch(week).merkleRoot != bytes32(0)) return false;
+        (bytes32[] memory ids, uint256 payoutTotal, uint256 feeTotal) = _consensusBatches();
+        uint256 bonus = bound(bonusSeed, 0, core.rewardsPool());
+        uint256 total = payoutTotal + bonus;
+        if (total == 0) return false;
+        (uint256[] memory amounts, uint256[] memory trials) = _split(total, splitSeed);
+        bytes32[] memory leaves = _leaves(week, amounts, trials);
+        bytes memory data = abi.encodeCall(core.settleEpoch, (week, MerkleHelper.root(leaves), ids, bonus));
+        if (!_call(operator, data)) return false;
+        uint256 ubiShare = (feeTotal * UBI_SHARE_BPS) / BPS;
+        ghostUbiExpected += ubiShare;
+        ghostTreasuryExpected += feeTotal - ubiShare;
+        ++settledEpochs;
+        EpochRecord storage record = epochs.push();
+        record.epochId = week;
+        record.amounts = amounts;
+        record.trials = trials;
+        record.leaves = leaves;
+        return true;
+    }
+
+    /// @dev A discretionary outflow that succeeds must leave the rolling window within 30% of the cap.
+    function _discretionary(address caller, bytes memory data) internal {
+        if (!_call(caller, data)) return;
+        ++discretionaryOutflows;
+        if (core.rollingOutflow() * BPS > core.maxRollingOutflow() * DISCRETIONARY_OUTFLOW_BPS) {
+            discretionaryAboveShare = true;
+        }
+    }
 
     function _call(address caller, bytes memory data) internal returns (bool ok) {
         uint256 balanceBefore = token.balanceOf(address(core));

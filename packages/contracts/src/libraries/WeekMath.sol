@@ -18,6 +18,10 @@ library WeekMath {
     uint256 internal constant SLASH_WINDOW_START = 5 days;
     /// @dev Sunday 12:00 UTC: slashing window closes and stakes unlock.
     uint256 internal constant STAKE_UNLOCK = 6 days;
+    /// @dev Monday 12:00 UTC one week after the week ended: the week can no longer be settled (late batches roll
+    ///      into a later epoch). A week is settleable in `[weekStart + 5 days, weekStart + 14 days)`, that is from its
+    ///      own Saturday noon and throughout the following week.
+    uint256 internal constant SETTLE_WINDOW_END = 14 days;
 
     /// @notice Week id containing timestamp `t`.
     function weekId(uint256 t) internal pure returns (uint256) {

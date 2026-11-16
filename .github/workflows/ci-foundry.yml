@@ -29,6 +29,9 @@ jobs:
       - uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
         with:
           version: v1.7.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.3
       - name: Format
         run: forge fmt --check
       - name: Build (EIP-170 sizes)
@@ -37,10 +40,11 @@ jobs:
         run: forge test -vvv
         env:
           FOUNDRY_PROFILE: ci
-      - name: Celo mainnet fork tests (pinned block 82845950)
-        run: forge test --match-path "test/fork/*" -vvv
+      - name: Celo mainnet fork tests (pinned block 82845950; fails if any fork test is skipped)
+        run: node scripts/test-fork.mjs
         env:
-          RUN_FORK_TESTS: 'true'
           CELO_RPC_URL: ${{ secrets.CELO_RPC_URL || 'https://forno.celo.org' }}
-      - name: Coverage
-        run: forge coverage --report summary --no-match-coverage "(test|script)/"
+      - name: Coverage gate (>= 80% lines and branches for src/)
+        run: |
+          forge coverage --report summary --report lcov --no-match-coverage "(test|script)/"
+          node scripts/check-coverage.mjs lcov.info --min-lines 80 --min-branches 80

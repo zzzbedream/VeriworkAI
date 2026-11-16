@@ -30,7 +30,7 @@ flowchart LR
 
 | Component | Status |
 |---|---|
-| Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **Live on Celo mainnet** and verified (addresses below). 178 unit/fuzz/invariant tests, Celo-fork tests, 100% line and branch coverage. A hardened v2 that addresses an internal multi-auditor review is being finalized and will be redeployed before any sponsor funds are accepted |
+| Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **v2 live on Celo mainnet** and verified (addresses below). 245 unit/fuzz/invariant tests and 10 Celo-fork tests, 100% line and branch coverage, hardened after an internal multi-auditor review |
 | Domain logic and database (`shared`, `database`) | Done: 182 + 98 tests (payout math, merkle epochs, week/UBI-day math, atomic trial/nonce/rate limits) |
 | Landing page (`web-app`) | Live at [veriworkai.vercel.app](https://veriworkai.vercel.app) |
 | Full app (trial → GoodID → Wallet Week, reviewer/QA queues, sponsor portal, public dashboard) and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
@@ -94,8 +94,10 @@ Details and responsible disclosure: [SECURITY.md](SECURITY.md).
 
 | Contract | Address |
 |---|---|
-| VeriWorkCore | [`0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a`](https://celo.blockscout.com/address/0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a) (verified, Sourcify exact match) |
-| AgentRegistry | [`0x3bAda340d038cA32D6a807D35071CB098f1431C1`](https://celo.blockscout.com/address/0x3bAda340d038cA32D6a807D35071CB098f1431C1) (verified, Sourcify exact match) |
+| VeriWorkCore (v2, active) | [`0xeC9Ea648d5F8C3bcb5E26Bd155dCf27Ed4B51c25`](https://celo.blockscout.com/address/0xeC9Ea648d5F8C3bcb5E26Bd155dCf27Ed4B51c25) (verified, Sourcify exact match) |
+| AgentRegistry (v2, active) | [`0x7D251CB1C4321cEff128F265CA17a2F65F85F05E`](https://celo.blockscout.com/address/0x7D251CB1C4321cEff128F265CA17a2F65F85F05E) (verified, Sourcify exact match) |
+
+v2 hardens the contracts after an internal multi-auditor review. It adds agent consent signatures, settlement time bounds, a per-epoch cap, exact-transfer checks against token fees, caller-supplied price caps, a sponsor funding lock and full trial handling across epochs. The v1 deployment ([`0x54af…9f9a`](https://celo.blockscout.com/address/0x54af0dfAf07E6a25B3A2aB4094b2Db302A599f9a), [`0x3bAd…31C1`](https://celo.blockscout.com/address/0x3bAda340d038cA32D6a807D35071CB098f1431C1)) never held user funds and is **paused**. Tags `deploy-celo-2026-11-15` and `deploy-celo-v2-2026-11-16` mark the exact source of each deployment.
 
 Public metrics (shipping with milestone 1): `/dashboard` and `/api/metrics/season5`. They use the GoodBuilders metric definitions, where users
 are EOAs that transact directly with the contracts above.

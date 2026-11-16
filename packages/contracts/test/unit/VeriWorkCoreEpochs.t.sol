@@ -3,7 +3,10 @@ pragma solidity 0.8.38;
 
 import {Vm} from "forge-std/Vm.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
+import {IGoodDollar} from "../../src/interfaces/IGoodDollar.sol";
+import {EpochMerkle} from "../../src/libraries/EpochMerkle.sol";
 import {IdentityLib} from "../../src/libraries/IdentityLib.sol";
+import {TokenTransfers} from "../../src/libraries/TokenTransfers.sol";
 import {RollingWindowBreaker} from "../../src/security/RollingWindowBreaker.sol";
 import {IVeriWorkCore} from "../../src/interfaces/IVeriWorkCore.sol";
 import {CoreFixture} from "../utils/CoreFixture.sol";
@@ -23,10 +26,12 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
     event EpochVetoed(uint256 indexed epochId, address indexed by);
     event EpochReRooted(uint256 indexed epochId, bytes32 newRoot, uint64 claimableAt, uint64 expiresAt);
     event EpochSwept(uint256 indexed epochId, uint256 amount);
+    event EpochCancelled(uint256 indexed epochId, uint256 amount);
     event Claimed(
         uint256 indexed epochId, address indexed account, address indexed root, uint256 payout, uint256 forfeited
     );
     event TrialRewardConsumed(address indexed root, uint256 indexed epochId, address indexed account);
+    event TrialRewardForfeited(uint256 indexed epochId, address indexed account, address indexed root, uint256 amount);
     event UbiContribution(address indexed ubiRecipient, uint256 amount);
     event TreasuryRevenue(address indexed treasury, uint256 amount);
 
@@ -87,7 +92,7 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         vm.prank(admin);
         core.setModulePrice(1, 100e18);
         vm.prank(root);
-        core.purchaseModule(1); // 20 ubi / 80 treasury pending
+        core.purchaseModule(1, type(uint256).max); // 20 ubi / 80 treasury pending
         vm.prank(sponsor);
         core.fundRewardsPool(10e18);
         vm.warp(SATURDAY);
@@ -102,7 +107,7 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         _toConsensus("b1", 100e18, 100e18);
         _open("b2", 100e18);
         vm.startPrank(operator);
-        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochNotSettleable.selector, WEEK_ID, SATURDAY));
+        vm.expectRevert(_notSettleable(WEEK_ID));
         core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 0);
         vm.warp(SATURDAY);
         vm.expectRevert(IVeriWorkCore.ZeroHash.selector);
@@ -135,6 +140,75 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochAlreadyExists.selector, WEEK_ID));
         core.settleEpoch(WEEK_ID, RESULTS, new bytes32[](0), 0);
         vm.stopPrank();
+    }
+
+    /// @notice Regression: only the week being closed (from its Saturday noon) or the previous week can be
+    ///         settled. An old, unused week id can no longer be settled at any moment.
+    function test_settleEpoch_onlyTheClosingOrPreviousWeek() public {
+        _fund(CAMPAIGN, 10_000e18);
+        _toConsensus("b1", 100e18, 100e18);
+        vm.warp(T0 + 1 days); // Tuesday of WEEK_ID
+        _settleReverts(WEEK_ID - 50);
+        _settleReverts(WEEK_ID - 2);
+        _settleReverts(WEEK_ID); // before its Saturday noon
+        vm.warp(SATURDAY);
+        _settleReverts(WEEK_ID + 1); // a future week
+
+        uint256 snapshot = vm.snapshotState();
+        vm.warp(T0 + 7 days); // Monday 12:00 of the next week: WEEK_ID is now the previous week
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 0);
+        vm.revertToState(snapshot);
+        vm.warp(T0 + 14 days - 1); // last second of the next week
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 0);
+        vm.revertToState(snapshot);
+        vm.warp(T0 + 14 days); // two weeks later: too late, the batch rolls into a later epoch
+        _settleReverts(WEEK_ID);
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID + 1, RESULTS, _ids("b1"), 0);
+        assertEq(core.batch("b1").epochId, WEEK_ID + 1);
+    }
+
+    /// @notice Regression: the drain scenario of a compromised operator (every escrow plus the whole rewards
+    ///         pool to one wallet, through an unused past week) is blocked by the time bound and the epoch cap.
+    function test_settleEpoch_forgedDrainOfAPastWeekIsBlocked() public {
+        vm.prank(stranger);
+        core.fundRewardsPool(1000e18);
+        _fund(CAMPAIGN, 10_000e18);
+        uint128 maxPayout = uint128((uint256(10_000e18) * 10_000) / 11_000);
+        _toConsensus("b1", maxPayout, maxPayout);
+        address attacker = makeAddr("attacker");
+        uint256 total = uint256(maxPayout) + 1000e18;
+        bytes32 forged = EpochMerkle.leaf(WEEK_ID - 50, attacker, total, 0);
+        vm.warp(T0 + 1 days);
+        vm.expectRevert(_notSettleable(WEEK_ID - 50));
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID - 50, forged, _ids("b1"), 1000e18);
+
+        vm.prank(admin);
+        core.setMaxEpochTotal(5000e18); // sized to the expected weekly payout
+        vm.warp(SATURDAY);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochTotalTooLarge.selector, total, 5000e18));
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID, EpochMerkle.leaf(WEEK_ID, attacker, total, 0), _ids("b1"), 1000e18);
+        assertEq(core.rewardsPool(), 1000e18);
+    }
+
+    function test_settleEpoch_totalCappedByMaxEpochTotal() public {
+        vm.prank(sponsor);
+        core.fundRewardsPool(1000e18);
+        _fund(CAMPAIGN, 10_000e18);
+        _toConsensus("b1", 400e18, 400e18);
+        vm.prank(admin);
+        core.setMaxEpochTotal(500e18);
+        vm.warp(SATURDAY);
+        vm.startPrank(operator);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochTotalTooLarge.selector, 500e18 + 1, 500e18));
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 100e18 + 1); // the bonus counts
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 100e18); // exactly the cap
+        vm.stopPrank();
+        assertEq(core.epoch(WEEK_ID).total, 500e18);
     }
 
     function test_settleEpoch_zeroPayoutBatchesAloneAreEmpty() public {
@@ -285,6 +359,44 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         _claim(root, allocs, 0);
     }
 
+    /// @notice Regression: under a sender-pays G$ fee a claim would cost the core `payout + fee`, and under a
+    ///         receiver-pays fee the worker would get `payout - fee`; both fail closed and the allocation stays
+    ///         escrowed until the worker can be paid in full.
+    function test_claim_failsClosedUnderAnyTransferFee() public {
+        Alloc[] memory allocs = _allocs(root, 100e18, 0);
+        _settledEpoch(allocs, 100e18);
+        token.setSenderPaysFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 101e18, 100e18));
+        _claim(root, allocs, 0);
+        token.setFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 99e18, 100e18));
+        _claim(root, allocs, 0);
+        assertEq(core.totalEpochLiability(), 100e18);
+        assertGe(token.balanceOf(address(core)), core.accountedBalance());
+        token.setFee(0, address(0)); // the DAO removes the formula (or exempts VeriWork)
+        _claim(root, allocs, 0);
+        assertEq(core.totalEpochLiability(), 0);
+        assertEq(token.balanceOf(root), BALANCE + 100e18, "paid in full");
+    }
+
+    /// @notice Regression: settlement routes the fee share in the same transaction, so under a receiver-pays fee
+    ///         (UBIScheme would get less than exactly 20%) the settlement reverts; once the fee is gone UBI gets
+    ///         exactly its share.
+    function test_settleEpoch_failsClosedUnderReceiverFee() public {
+        _fund(CAMPAIGN, 10_000e18);
+        _toConsensus("b1", 1000e18, 1000e18);
+        vm.warp(SATURDAY);
+        token.setFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 19.8e18, 20e18));
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 0);
+        token.setFee(0, address(0));
+        vm.prank(operator);
+        core.settleEpoch(WEEK_ID, RESULTS, _ids("b1"), 0);
+        assertEq(token.balanceOf(ubi), 20e18, "exactly 20% of the 100 G$ fee");
+        assertEq(token.balanceOf(treasury), 80e18);
+    }
+
     function test_claim_reentrancyIsBlocked() public {
         Alloc[] memory allocs = _allocs(root, 100e18, 0);
         _settledEpoch(allocs, 100e18);
@@ -298,14 +410,18 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
     function test_trial_firstWalletGetsItSecondWalletOfSameRootForfeits() public {
         Alloc[] memory allocs = _allocs(connected, 150e18, 100e18, root, 100e18, 60e18);
         _settledEpoch(allocs, 250e18);
+        assertFalse(core.trialRewardUsed(root));
         vm.expectEmit(address(core));
         emit TrialRewardConsumed(root, WEEK_ID, connected);
         vm.expectEmit(address(core));
         emit Claimed(WEEK_ID, connected, root, 150e18, 0);
         _claim(connected, allocs, 0);
         assertTrue(core.trialRewardUsed(root));
+        assertEq(core.trialWalletOf(root), connected);
 
         uint256 before = token.balanceOf(root);
+        vm.expectEmit(address(core));
+        emit TrialRewardForfeited(WEEK_ID, root, root, 60e18);
         vm.expectEmit(address(core));
         emit Claimed(WEEK_ID, root, root, 40e18, 60e18);
         _claim(root, allocs, 1);
@@ -313,24 +429,58 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         assertEq(core.rewardsPool(), 60e18, "forfeit goes to the rewards pool");
         assertEq(core.epoch(WEEK_ID).claimed, 250e18);
         assertEq(core.totalEpochLiability(), 0);
+        assertEq(core.trialWalletOf(root), connected, "the trial wallet never changes");
     }
 
-    function test_trial_onlyOncePerHumanAcrossEpochs() public {
-        Alloc[] memory allocs = _allocs(root, 100e18, 100e18);
+    /// @notice Regression: a two-task trial whose tasks settle in two epochs is paid in full to the wallet that
+    ///         did it, whatever the claim order.
+    function test_trial_sameWalletIsPaidAcrossEpochs() public {
+        Alloc[] memory allocs = _allocs(connected, 100e18, 100e18);
         _settledEpoch(allocs, 100e18);
-        _claim(root, allocs, 0);
-        assertEq(core.rewardsPool(), 0);
+        uint256 next = _settleNextWeek(connected, 120e18, 120e18);
 
-        uint256 next = WEEK_ID + 1;
-        _toConsensus("b2", 100e18, 100e18);
-        vm.warp(_weekStart(next) + 5 days);
-        bytes32[] memory leaves = _leaves(next, allocs);
-        vm.prank(operator);
-        core.settleEpoch(next, leaves[0], _ids("b2"), 0);
-        vm.warp(block.timestamp + 12 hours);
+        uint256 before = token.balanceOf(connected);
+        vm.recordLogs();
+        vm.prank(connected);
+        core.claim(next, 120e18, 120e18, new bytes32[](0)); // the later epoch first
+        _claim(connected, allocs, 0);
+        assertEq(token.balanceOf(connected) - before, 220e18, "both trial tasks paid");
+        assertEq(core.rewardsPool(), 0, "nothing forfeited");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        assertEq(_countLogs(logs, TrialRewardConsumed.selector), 1, "the trial is consumed once");
+        assertEq(_countLogs(logs, TrialRewardForfeited.selector), 0);
+        assertEq(core.trialWalletOf(root), connected);
+    }
+
+    function test_trial_sameWalletClaimManyAcrossEpochs() public {
+        Alloc[] memory allocs = _allocs(connected, 100e18, 100e18);
+        _settledEpoch(allocs, 100e18);
+        uint256 next = _settleNextWeek(connected, 120e18, 120e18);
+        IVeriWorkCore.ClaimRequest[] memory requests = new IVeriWorkCore.ClaimRequest[](2);
+        requests[0] = IVeriWorkCore.ClaimRequest(WEEK_ID, 100e18, 100e18, _proof(WEEK_ID, allocs, 0));
+        requests[1] = IVeriWorkCore.ClaimRequest(next, 120e18, 120e18, new bytes32[](0));
+        uint256 before = token.balanceOf(connected);
+        vm.prank(connected);
+        core.claimMany(requests);
+        assertEq(token.balanceOf(connected) - before, 220e18);
+        assertEq(core.rewardsPool(), 0);
+    }
+
+    /// @notice A second wallet of the same human still forfeits its trial part in a later epoch, with an event.
+    function test_trial_secondWalletForfeitsAcrossEpochs() public {
+        Alloc[] memory allocs = _allocs(connected, 100e18, 100e18);
+        _settledEpoch(allocs, 100e18);
+        _claim(connected, allocs, 0);
+        uint256 next = _settleNextWeek(root, 150e18, 120e18);
+        uint256 before = token.balanceOf(root);
+        vm.expectEmit(address(core));
+        emit TrialRewardForfeited(next, root, root, 120e18);
+        vm.expectEmit(address(core));
+        emit Claimed(next, root, root, 30e18, 120e18);
         vm.prank(root);
-        core.claim(next, 100e18, 100e18, new bytes32[](0));
-        assertEq(core.rewardsPool(), 100e18, "second trial of the same human is forfeited");
+        core.claim(next, 150e18, 120e18, new bytes32[](0));
+        assertEq(token.balanceOf(root) - before, 30e18, "only the non-trial part is paid");
+        assertEq(core.rewardsPool(), 120e18);
     }
 
     function test_trial_differentHumansEachGetOne() public {
@@ -418,25 +568,110 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         _settledEpoch(allocs, 200e18);
         _claim(root, allocs, 0);
         IVeriWorkCore.Epoch memory e = core.epoch(WEEK_ID);
+        vm.startPrank(operator);
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochNotExpired.selector, WEEK_ID, e.expiresAt));
         core.sweepExpiredEpoch(WEEK_ID);
         vm.warp(e.expiresAt);
         vm.expectEmit(address(core));
         emit EpochSwept(WEEK_ID, 100e18);
-        vm.prank(stranger);
         core.sweepExpiredEpoch(WEEK_ID);
         assertEq(core.rewardsPool(), 100e18);
         assertEq(core.totalEpochLiability(), 0);
         assertTrue(core.epoch(WEEK_ID).swept);
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
         core.sweepExpiredEpoch(WEEK_ID);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.UnknownEpoch.selector, 7));
+        core.sweepExpiredEpoch(7);
+        vm.stopPrank();
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
         _claim(root2, allocs, 1);
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
         vm.prank(guardian);
         core.vetoEpoch(WEEK_ID);
-        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.UnknownEpoch.selector, 7));
-        core.sweepExpiredEpoch(7);
+    }
+
+    /// @notice Regression: nobody outside the operator and the admin can sweep. While G$ is paused every claim
+    ///         fails for reasons outside VeriWork, and a bot could otherwise wipe the claims at `expiresAt`.
+    function test_sweep_onlyOperatorOrAdmin() public {
+        Alloc[] memory allocs = _allocs(root, 100e18, 0);
+        _settledEpoch(allocs, 100e18);
+        uint256 expiresAt = core.epoch(WEEK_ID).expiresAt;
+        vm.warp(expiresAt - 1 days);
+        token.setPaused(true); // GoodDollar pauses G$
+        vm.expectRevert(IGoodDollar.SUPER_GOODDOLLAR_PAUSED.selector);
+        _claim(root, allocs, 0);
+        vm.warp(expiresAt);
+        bytes32 operatorRole = core.OPERATOR_ROLE();
+        vm.expectRevert(_unauthorized(stranger, operatorRole));
+        vm.prank(stranger);
+        core.sweepExpiredEpoch(WEEK_ID);
+        vm.expectRevert(_unauthorized(guardian, operatorRole));
+        vm.prank(guardian);
+        core.sweepExpiredEpoch(WEEK_ID);
+        vm.prank(guardian);
+        core.vetoEpoch(WEEK_ID); // the epoch can still be saved
+        bytes32 sameRoot = core.epoch(WEEK_ID).merkleRoot;
+        vm.prank(admin);
+        core.reRootEpoch(WEEK_ID, sameRoot);
+        token.setPaused(false);
+        vm.warp(block.timestamp + core.claimDelay());
+        _claim(root, allocs, 0);
+        assertEq(core.totalEpochLiability(), 0);
+    }
+
+    function test_sweep_byAdmin() public {
+        Alloc[] memory allocs = _allocs(root, 100e18, 0);
+        _settledEpoch(allocs, 100e18);
+        vm.warp(core.epoch(WEEK_ID).expiresAt);
+        vm.prank(admin);
+        core.sweepExpiredEpoch(WEEK_ID);
+        assertEq(core.rewardsPool(), 100e18);
+    }
+
+    /// @notice Regression: a vetoed epoch that is wrong as a whole is cancelled at once: its unclaimed remainder
+    ///         returns to the rewards pool (for refunds) instead of staying frozen.
+    function test_cancelEpoch_releasesTheVetoedRemainder() public {
+        Alloc[] memory allocs = _allocs(root, 100e18, 0, root2, 100e18, 0);
+        _settledEpoch(allocs, 200e18);
+        _claim(root, allocs, 0);
+        vm.prank(guardian);
+        core.vetoEpoch(WEEK_ID);
+        vm.expectEmit(address(core));
+        emit EpochCancelled(WEEK_ID, 100e18);
+        vm.prank(admin);
+        core.cancelEpoch(WEEK_ID);
+        IVeriWorkCore.Epoch memory e = core.epoch(WEEK_ID);
+        assertTrue(e.vetoed && e.swept);
+        assertEq(core.totalEpochLiability(), 0);
+        assertEq(core.rewardsPool(), 100e18);
+        assertEq(token.balanceOf(address(core)), core.accountedBalance());
+
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
+        core.cancelEpoch(WEEK_ID);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
+        core.reRootEpoch(WEEK_ID, RESULTS);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsSwept.selector, WEEK_ID));
+        core.sweepExpiredEpoch(WEEK_ID);
+        core.withdrawRewardsPool(sponsor, 100e18); // e.g. refund the sponsor
+        vm.stopPrank();
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsVetoed.selector, WEEK_ID));
+        _claim(root2, allocs, 1);
+    }
+
+    function test_cancelEpoch_reverts() public {
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.UnknownEpoch.selector, WEEK_ID));
+        vm.prank(admin);
+        core.cancelEpoch(WEEK_ID);
+        _settledEpoch(_allocs(root, 100e18, 0), 100e18);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochNotVetoed.selector, WEEK_ID));
+        vm.prank(admin);
+        core.cancelEpoch(WEEK_ID);
+        vm.prank(guardian);
+        core.vetoEpoch(WEEK_ID);
+        vm.expectRevert(_unauthorized(guardian, core.DEFAULT_ADMIN_ROLE()));
+        vm.prank(guardian);
+        core.cancelEpoch(WEEK_ID);
     }
 
     /// @notice Regression: a veto near the end of the window must not let anyone sweep the workers' escrow.
@@ -447,6 +682,7 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         core.vetoEpoch(WEEK_ID);
         vm.warp(core.epoch(WEEK_ID).expiresAt + 30 days);
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.EpochIsVetoed.selector, WEEK_ID));
+        vm.prank(operator);
         core.sweepExpiredEpoch(WEEK_ID);
         vm.prank(admin);
         core.reRootEpoch(WEEK_ID, merkleRoot); // same root: just restarts the claim window
@@ -471,6 +707,7 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         vm.expectRevert(
             abi.encodeWithSelector(IVeriWorkCore.EpochNotExpired.selector, WEEK_ID, core.epoch(WEEK_ID).expiresAt)
         );
+        vm.prank(operator);
         core.sweepExpiredEpoch(WEEK_ID);
         vm.warp(block.timestamp + core.claimDelay());
         _claim(root, allocs, 0);
@@ -524,6 +761,37 @@ contract VeriWorkCoreEpochsTest is CoreFixture {
         assertEq(core.claimable(WEEK_ID, root, 130e18), 30e18);
         vm.warp(core.epoch(WEEK_ID).expiresAt);
         assertEq(core.claimable(WEEK_ID, root, 130e18), 0, "expired");
+    }
+
+    // ------------------------------------------------------------------ helpers
+
+    /// @dev Takes batch "b2" paying `amount` to consensus, settles WEEK_ID + 1 on its Saturday with the single leaf
+    ///      (account, amount, trialAmount) and warps to its claimable time.
+    function _settleNextWeek(address account, uint128 amount, uint256 trialAmount) internal returns (uint256 next) {
+        next = WEEK_ID + 1;
+        _toConsensus("b2", amount, amount);
+        vm.warp(_weekStart(next) + 5 days);
+        vm.prank(operator);
+        core.settleEpoch(next, EpochMerkle.leaf(next, account, amount, trialAmount), _ids("b2"), 0);
+        vm.warp(block.timestamp + core.claimDelay());
+    }
+
+    function _settleReverts(uint256 epochId) internal {
+        vm.expectRevert(_notSettleable(epochId));
+        vm.prank(operator);
+        core.settleEpoch(epochId, RESULTS, _ids("b1"), 0);
+    }
+
+    function _notSettleable(uint256 epochId) internal pure returns (bytes memory) {
+        uint256 start = _weekStart(epochId);
+        return
+            abi.encodeWithSelector(IVeriWorkCore.EpochNotSettleable.selector, epochId, start + 5 days, start + 14 days);
+    }
+
+    function _countLogs(Vm.Log[] memory logs, bytes32 topic) internal pure returns (uint256 count) {
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].topics.length > 0 && logs[i].topics[0] == topic) ++count;
+        }
     }
 
     function _countTransfersTo(address to) internal view returns (uint256 count) {

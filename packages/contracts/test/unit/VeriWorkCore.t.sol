@@ -6,6 +6,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IIdentity} from "../../src/interfaces/IIdentity.sol";
 import {GuardianPausable} from "../../src/security/GuardianPausable.sol";
 import {RollingWindowBreaker} from "../../src/security/RollingWindowBreaker.sol";
+import {TokenTransfers} from "../../src/libraries/TokenTransfers.sol";
 import {IVeriWorkCore} from "../../src/interfaces/IVeriWorkCore.sol";
 import {VeriWorkCore} from "../../src/VeriWorkCore.sol";
 import {CoreFixture} from "../utils/CoreFixture.sol";
@@ -34,6 +35,7 @@ contract VeriWorkCoreTest is CoreFixture {
         assertEq(core.claimDelay(), 12 hours);
         assertEq(core.claimWindow(), 60 days);
         assertEq(core.maxRollingOutflow(), CAP);
+        assertEq(core.maxEpochTotal(), MAX_EPOCH);
         assertTrue(core.hasRole(core.DEFAULT_ADMIN_ROLE(), admin));
         assertTrue(core.hasRole(core.GUARDIAN_ROLE(), guardian));
         assertTrue(core.hasRole(core.OPERATOR_ROLE(), operator));
@@ -55,6 +57,8 @@ contract VeriWorkCoreTest is CoreFixture {
         assertEq(core.MAX_CLAIM_DELAY(), 3 days);
         assertEq(core.MIN_CLAIM_WINDOW(), 14 days);
         assertEq(core.MAX_CLAIM_WINDOW(), 365 days);
+        assertEq(core.CAMPAIGN_FUNDING_LOCK(), 24 hours);
+        assertEq(core.DISCRETIONARY_OUTFLOW_BPS(), 3000);
     }
 
     function test_constructor_emitsParameterEvents() public {
@@ -66,6 +70,8 @@ contract VeriWorkCoreTest is CoreFixture {
         emit ParameterUpdated("platformFeeBps", 0, FEE_BPS);
         vm.expectEmit();
         emit ParameterUpdated("stakeAmount", 0, STAKE);
+        vm.expectEmit();
+        emit ParameterUpdated("maxEpochTotal", 0, MAX_EPOCH);
         _deployCore();
     }
 
@@ -90,13 +96,15 @@ contract VeriWorkCoreTest is CoreFixture {
         IERC20 t = IERC20(address(token));
         IIdentity id = IIdentity(address(identity));
         vm.expectRevert(_outOfBounds("platformFeeBps", 2001));
-        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, 2001, STAKE);
+        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, MAX_EPOCH, 2001, STAKE);
         vm.expectRevert(_outOfBounds("stakeAmount", 10e18 - 1));
-        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, FEE_BPS, 10e18 - 1);
+        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, MAX_EPOCH, FEE_BPS, 10e18 - 1);
         vm.expectRevert(_outOfBounds("stakeAmount", 100_000e18 + 1));
-        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, FEE_BPS, 100_000e18 + 1);
+        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, MAX_EPOCH, FEE_BPS, 100_000e18 + 1);
         vm.expectRevert(_outOfBounds("maxRollingOutflow", 0));
-        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, 0, FEE_BPS, STAKE);
+        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, 0, MAX_EPOCH, FEE_BPS, STAKE);
+        vm.expectRevert(_outOfBounds("maxEpochTotal", 0));
+        new VeriWorkCore(t, id, admin, guardian, operator, treasury, ubi, CAP, 0, FEE_BPS, STAKE);
     }
 
     // ------------------------------------------------------------------ admin setters
@@ -166,6 +174,22 @@ contract VeriWorkCoreTest is CoreFixture {
         core.setMaxRollingOutflow(0);
     }
 
+    function test_setMaxEpochTotal() public {
+        vm.expectEmit(address(core));
+        emit ParameterUpdated("maxEpochTotal", MAX_EPOCH, 5000e18);
+        vm.prank(admin);
+        core.setMaxEpochTotal(5000e18);
+        assertEq(core.maxEpochTotal(), 5000e18);
+        uint256 tooLarge = uint256(type(uint128).max) + 1;
+        vm.startPrank(admin);
+        core.setMaxEpochTotal(type(uint128).max);
+        vm.expectRevert(_outOfBounds("maxEpochTotal", 0));
+        core.setMaxEpochTotal(0);
+        vm.expectRevert(_outOfBounds("maxEpochTotal", tooLarge));
+        core.setMaxEpochTotal(tooLarge);
+        vm.stopPrank();
+    }
+
     function test_setRecipients() public {
         address newUbi = makeAddr("newUbi");
         address newTreasury = makeAddr("newTreasury");
@@ -184,6 +208,11 @@ contract VeriWorkCoreTest is CoreFixture {
         core.setUbiRecipient(address(0));
         vm.expectRevert(GuardianPausable.ZeroAddress.selector);
         core.setTreasury(address(0));
+        // Regression: a recipient set to the core itself would make every flush (and so every settlement) revert.
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.InvalidRecipient.selector, address(core)));
+        core.setUbiRecipient(address(core));
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.InvalidRecipient.selector, address(core)));
+        core.setTreasury(address(core));
         vm.stopPrank();
     }
 
@@ -199,6 +228,8 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.expectRevert(_unauthorized(operator, role));
         core.setMaxRollingOutflow(1);
         vm.expectRevert(_unauthorized(operator, role));
+        core.setMaxEpochTotal(1);
+        vm.expectRevert(_unauthorized(operator, role));
         core.setUbiRecipient(stranger);
         vm.expectRevert(_unauthorized(operator, role));
         core.setTreasury(stranger);
@@ -207,9 +238,11 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.expectRevert(_unauthorized(operator, role));
         core.withdrawRewardsPool(stranger, 1);
         vm.expectRevert(_unauthorized(operator, role));
-        core.sweepSurplus(stranger);
+        core.sweepSurplus(stranger, 1);
         vm.expectRevert(_unauthorized(operator, role));
         core.reRootEpoch(WEEK_ID, bytes32(uint256(1)));
+        vm.expectRevert(_unauthorized(operator, role));
+        core.cancelEpoch(WEEK_ID);
         vm.stopPrank();
     }
 
@@ -277,9 +310,9 @@ contract VeriWorkCoreTest is CoreFixture {
 
         vm.startPrank(sponsor);
         vm.expectRevert(paused);
-        core.fundCampaign(CAMPAIGN, 1);
+        core.fundCampaign(CAMPAIGN, 1, ANY_FEE);
         vm.expectRevert(paused);
-        core.fundCampaignWithPermit(CAMPAIGN, 1, 0, 0, 0, 0);
+        core.fundCampaignWithPermit(CAMPAIGN, 1, ANY_FEE, 0, 0, 0, 0);
         vm.expectRevert(paused);
         core.withdrawCampaign(CAMPAIGN, 1);
         vm.expectRevert(paused);
@@ -287,17 +320,15 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.expectRevert(paused);
         core.claimMany(requests);
         vm.expectRevert(paused);
-        core.sweepExpiredEpoch(WEEK_ID);
+        core.depositStake(STAKE);
         vm.expectRevert(paused);
-        core.depositStake();
-        vm.expectRevert(paused);
-        core.depositStakeWithPermit(0, 0, 0, 0);
+        core.depositStakeWithPermit(STAKE, 0, 0, 0, 0);
         vm.expectRevert(paused);
         core.withdrawStake(WEEK_ID, root);
         vm.expectRevert(paused);
-        core.purchaseModule(1);
+        core.purchaseModule(1, 1);
         vm.expectRevert(paused);
-        core.purchaseModuleWithPermit(1, 0, 0, 0, 0);
+        core.purchaseModuleWithPermit(1, 1, 0, 0, 0, 0);
         vm.expectRevert(paused);
         core.fundRewardsPool(1);
         vm.expectRevert(paused);
@@ -318,14 +349,14 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.expectRevert(paused);
         core.settleEpoch(WEEK_ID, RESULTS, none, 1);
         vm.expectRevert(paused);
-        core.slashStake(WEEK_ID, root, 1, RESULTS);
+        core.sweepExpiredEpoch(WEEK_ID);
         vm.stopPrank();
 
         vm.startPrank(admin);
         vm.expectRevert(paused);
         core.withdrawRewardsPool(admin, 1);
         vm.expectRevert(paused);
-        core.sweepSurplus(admin);
+        core.sweepSurplus(admin, 1);
         vm.stopPrank();
     }
 
@@ -346,11 +377,18 @@ contract VeriWorkCoreTest is CoreFixture {
         core.setStakeAmount(200e18);
         core.setClaimTiming(1 hours, 14 days);
         core.setMaxRollingOutflow(CAP / 2);
+        core.setMaxEpochTotal(CAP / 2);
         core.setUbiRecipient(makeAddr("u2"));
         core.setTreasury(makeAddr("t2"));
         core.setModulePrice(7, 1e18);
         vm.stopPrank();
         assertEq(core.epoch(WEEK_ID).merkleRoot, keccak256("new root"));
+
+        vm.prank(guardian);
+        core.vetoEpoch(WEEK_ID);
+        vm.prank(admin);
+        core.cancelEpoch(WEEK_ID); // cancelling a vetoed epoch moves no tokens
+        assertTrue(core.epoch(WEEK_ID).swept);
     }
 
     // ------------------------------------------------------------------ campaigns
@@ -384,16 +422,42 @@ contract VeriWorkCoreTest is CoreFixture {
         _onboardSponsor(stranger);
         vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.NotCampaignSponsor.selector, CAMPAIGN, stranger));
         vm.prank(stranger);
-        core.fundCampaign(CAMPAIGN, 1e18);
+        core.fundCampaign(CAMPAIGN, 1e18, ANY_FEE);
+    }
+
+    /// @notice Regression: the sponsor caps the fee it accepts; a fee raised before its first funding reverts.
+    function test_fundCampaign_feeCappedByCaller() public {
+        vm.prank(admin);
+        core.setPlatformFeeBps(2000); // mined before the sponsor's first funding
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.PlatformFeeAboveMax.selector, 2000, FEE_BPS));
+        vm.prank(sponsor);
+        core.fundCampaign(CAMPAIGN, 100e18, FEE_BPS);
+        assertEq(core.campaign(CAMPAIGN).sponsor, address(0), "nothing was created");
+
+        vm.prank(admin);
+        core.setPlatformFeeBps(FEE_BPS);
+        vm.prank(sponsor);
+        core.fundCampaign(CAMPAIGN, 100e18, FEE_BPS); // exactly at the cap
+        vm.prank(admin);
+        core.setPlatformFeeBps(2000);
+        vm.prank(sponsor);
+        core.fundCampaign(CAMPAIGN, 50e18, FEE_BPS); // top-ups keep the snapshotted fee
+        assertEq(core.campaign(CAMPAIGN).available, 150e18);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.PlatformFeeAboveMax.selector, FEE_BPS, FEE_BPS - 1));
+        vm.prank(sponsor);
+        core.fundCampaign(CAMPAIGN, 1e18, FEE_BPS - 1);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.PlatformFeeAboveMax.selector, FEE_BPS, 0));
+        vm.prank(sponsor);
+        core.fundCampaignWithPermit(CAMPAIGN, 1e18, 0, 0, 0, 0, 0);
     }
 
     function test_fundCampaign_requiresSponsorRole() public {
         bytes32 role = core.SPONSOR_ROLE();
         vm.startPrank(stranger);
         vm.expectRevert(_unauthorized(stranger, role));
-        core.fundCampaign("anyone", 1e18);
+        core.fundCampaign("anyone", 1e18, ANY_FEE);
         vm.expectRevert(_unauthorized(stranger, role));
-        core.fundCampaignWithPermit("anyone", 1e18, 0, 0, 0, 0);
+        core.fundCampaignWithPermit("anyone", 1e18, ANY_FEE, 0, 0, 0, 0);
         vm.stopPrank();
         assertEq(core.getRoleAdmin(role), core.OPERATOR_ROLE(), "the operator onboards sponsors");
         vm.expectRevert(_unauthorized(admin, core.OPERATOR_ROLE()));
@@ -408,8 +472,41 @@ contract VeriWorkCoreTest is CoreFixture {
         core.setMaxRollingOutflow(1000e18);
         vm.expectRevert(_unauthorized(stranger, core.SPONSOR_ROLE()));
         vm.prank(stranger);
-        core.fundCampaign("grief", 1000e18);
+        core.fundCampaign("grief", 1000e18, ANY_FEE);
         assertEq(core.remainingOutflowCapacity(), 1000e18, "capacity untouched");
+    }
+
+    /// @notice Regression: even a vetted sponsor cannot loop fund/withdraw to fill the shared 24 h breaker;
+    ///         funds credited less than 24 hours ago are locked.
+    function test_sponsorLoopCannotPinBreaker() public {
+        vm.prank(admin);
+        core.setMaxRollingOutflow(1000e18);
+        vm.startPrank(sponsor);
+        core.fundCampaign("loop", 99e18, ANY_FEE);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.CampaignFundsLocked.selector, block.timestamp + 1 days));
+        core.withdrawCampaign("loop", 99e18);
+        vm.stopPrank();
+        assertEq(core.remainingOutflowCapacity(), 1000e18, "capacity untouched");
+    }
+
+    function test_withdrawCampaign_lockedFor24hAfterEachFunding() public {
+        _fund(CAMPAIGN, 100e18);
+        assertEq(core.campaign(CAMPAIGN).lastFundedAt, block.timestamp);
+        uint256 unlockAt = block.timestamp + 1 days;
+        vm.warp(unlockAt - 1);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.CampaignFundsLocked.selector, unlockAt));
+        vm.prank(sponsor);
+        core.withdrawCampaign(CAMPAIGN, 1e18);
+        vm.warp(unlockAt);
+        vm.prank(sponsor);
+        core.withdrawCampaign(CAMPAIGN, 1e18);
+
+        _fund(CAMPAIGN, 10e18); // a top-up restarts the lock for the whole campaign
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.CampaignFundsLocked.selector, unlockAt + 1 days));
+        vm.prank(sponsor);
+        core.withdrawCampaign(CAMPAIGN, 1e18);
+        _open("b1", 50e18); // the lock never blocks the batch pipeline
+        assertEq(core.campaign(CAMPAIGN).reserved, 55e18);
     }
 
     function test_revokedSponsorCanWithdrawButNotTopUp() public {
@@ -419,6 +516,7 @@ contract VeriWorkCoreTest is CoreFixture {
         core.revokeRole(role, sponsor);
         vm.expectRevert(_unauthorized(sponsor, role));
         _fund(CAMPAIGN, 1e18);
+        vm.warp(block.timestamp + core.CAMPAIGN_FUNDING_LOCK());
         vm.prank(sponsor);
         core.withdrawCampaign(CAMPAIGN, 100e18);
         assertEq(core.campaign(CAMPAIGN).available, 0);
@@ -427,24 +525,33 @@ contract VeriWorkCoreTest is CoreFixture {
     function test_fundCampaign_rejectsZeroIdAndAmount() public {
         vm.startPrank(sponsor);
         vm.expectRevert(IVeriWorkCore.ZeroId.selector);
-        core.fundCampaign(bytes32(0), 1e18);
+        core.fundCampaign(bytes32(0), 1e18, ANY_FEE);
         vm.expectRevert(IVeriWorkCore.ZeroAmount.selector);
-        core.fundCampaign(CAMPAIGN, 0);
+        core.fundCampaign(CAMPAIGN, 0, ANY_FEE);
         vm.stopPrank();
     }
 
-    function test_fundCampaign_creditsBalanceDeltaUnderTransferFee() public {
-        token.setFee(250, makeAddr("feeSink")); // the DAO switches on a 2.5% formula
+    /// @notice A G$ transfer fee never takes part of a sponsor's funding: under a receiver-pays or a sender-pays
+    ///         formula the funding reverts, nothing is credited and nothing is charged.
+    function test_fundCampaign_failsClosedUnderAnyTransferFee() public {
+        address feeSink = makeAddr("feeSink");
+        token.setFee(250, feeSink); // the DAO switches on a 2.5% receiver-pays formula
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 390e18, 400e18));
         _fund(CAMPAIGN, 400e18);
-        assertEq(core.campaign(CAMPAIGN).available, 390e18);
-        assertEq(core.totalCampaignEscrow(), 390e18);
-        assertEq(token.balanceOf(address(core)), core.accountedBalance());
-    }
-
-    function test_fundCampaign_revertsWhenNothingArrives() public {
-        token.setFee(10_000, makeAddr("feeSink"));
-        vm.expectRevert(IVeriWorkCore.ZeroAmount.selector);
+        token.setFee(10_000, feeSink); // nothing would arrive
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 0, 1e18));
         _fund(CAMPAIGN, 1e18);
+        token.setSenderPaysFee(250, feeSink); // the sponsor would pay 410 for 400
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 410e18, 400e18));
+        _fund(CAMPAIGN, 400e18);
+        assertEq(core.campaign(CAMPAIGN).sponsor, address(0), "nothing was created or credited");
+        assertEq(token.balanceOf(sponsor), BALANCE, "nothing was charged");
+        assertEq(token.balanceOf(feeSink), 0);
+
+        token.setFee(0, address(0)); // the DAO removes the formula (or exempts VeriWork)
+        _fund(CAMPAIGN, 400e18);
+        assertEq(core.campaign(CAMPAIGN).available, 400e18);
+        assertEq(token.balanceOf(address(core)), core.accountedBalance());
     }
 
     function test_fundCampaignWithPermit() public {
@@ -454,7 +561,7 @@ contract VeriWorkCoreTest is CoreFixture {
         _onboardSponsor(permitSponsor);
         PermitSig memory sig = _signPermit(address(token), sponsorKey, address(core), 100e18, block.timestamp + 1);
         vm.prank(permitSponsor);
-        core.fundCampaignWithPermit(CAMPAIGN, 100e18, sig.deadline, sig.v, sig.r, sig.s);
+        core.fundCampaignWithPermit(CAMPAIGN, 100e18, FEE_BPS, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(core.campaign(CAMPAIGN).sponsor, permitSponsor);
         assertEq(core.campaign(CAMPAIGN).available, 100e18);
     }
@@ -462,6 +569,7 @@ contract VeriWorkCoreTest is CoreFixture {
     function test_withdrawCampaign() public {
         _fund(CAMPAIGN, 1000e18);
         _open("b1", 500e18); // reserves 550
+        vm.warp(block.timestamp + core.CAMPAIGN_FUNDING_LOCK());
         uint256 before = token.balanceOf(sponsor);
         vm.expectEmit(address(core));
         emit CampaignWithdrawn(CAMPAIGN, sponsor, 450e18);
@@ -483,6 +591,7 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.startPrank(sponsor);
         vm.expectRevert(IVeriWorkCore.ZeroAmount.selector);
         core.withdrawCampaign(CAMPAIGN, 0);
+        vm.warp(block.timestamp + core.CAMPAIGN_FUNDING_LOCK());
         vm.expectRevert(
             abi.encodeWithSelector(IVeriWorkCore.InsufficientCampaignBalance.selector, CAMPAIGN, 45e18, 45e18 + 1)
         );
@@ -490,15 +599,50 @@ contract VeriWorkCoreTest is CoreFixture {
         vm.stopPrank();
     }
 
-    function test_withdrawCampaign_goesThroughBreaker() public {
+    /// @notice Sponsor withdrawals are discretionary outflows: they stop at 30% of the rolling cap.
+    function test_withdrawCampaign_limitedToTheDiscretionaryShareOfTheBreaker() public {
         _fund(CAMPAIGN, 1000e18);
+        vm.warp(block.timestamp + core.CAMPAIGN_FUNDING_LOCK());
         vm.prank(admin);
         core.setMaxRollingOutflow(100e18);
+        assertEq(core.remainingDiscretionaryCapacity(), 30e18);
         vm.expectRevert(
-            abi.encodeWithSelector(RollingWindowBreaker.RollingOutflowLimitExceeded.selector, 101e18, 100e18)
+            abi.encodeWithSelector(IVeriWorkCore.DiscretionaryOutflowLimitExceeded.selector, 30e18 + 1, 30e18)
         );
         vm.prank(sponsor);
-        core.withdrawCampaign(CAMPAIGN, 101e18);
+        core.withdrawCampaign(CAMPAIGN, 30e18 + 1);
+        vm.prank(sponsor);
+        core.withdrawCampaign(CAMPAIGN, 30e18);
+        assertEq(core.remainingDiscretionaryCapacity(), 0);
+        assertEq(core.remainingOutflowCapacity(), 70e18, "70% of the cap stays available to users");
+        vm.prank(admin);
+        core.setMaxRollingOutflow(50e18); // lowered below what the window already holds
+        assertEq(core.remainingDiscretionaryCapacity(), 0);
+    }
+
+    /// @notice Regression: a sponsor holding capital equal to the whole rolling cap cannot keep the breaker full
+    ///         (fund, wait out the 24 h lock, withdraw everything, repeat). Its withdrawals stop at 30% of the cap,
+    ///         so claims, refunds and the fee flush always keep the other 70%.
+    function test_sponsorCapitalCannotPinBreaker() public {
+        vm.prank(admin);
+        core.setMaxRollingOutflow(10_000e18);
+        _fund("pin", 10_000e18); // Monday: capital equal to the whole cap
+        Alloc[] memory allocs = _allocs(root, 6000e18, 0);
+        _settledEpoch(allocs, 6000e18); // the Saturday settlement flushes the 600 G$ fee
+        assertEq(core.remainingDiscretionaryCapacity(), 2400e18);
+        vm.expectRevert(
+            abi.encodeWithSelector(IVeriWorkCore.DiscretionaryOutflowLimitExceeded.selector, 10_000e18, 2400e18)
+        );
+        vm.prank(sponsor);
+        core.withdrawCampaign("pin", 10_000e18);
+        vm.prank(sponsor);
+        core.withdrawCampaign("pin", 2400e18);
+        vm.expectRevert(abi.encodeWithSelector(IVeriWorkCore.DiscretionaryOutflowLimitExceeded.selector, 1, 0));
+        vm.prank(sponsor);
+        core.withdrawCampaign("pin", 1);
+        _claim(root, allocs, 0); // the 6,000 G$ claim still fits
+        assertEq(token.balanceOf(root), BALANCE + 6000e18);
+        assertEq(core.rollingOutflow(), 9000e18);
     }
 
     // ------------------------------------------------------------------ batch state machine
@@ -679,7 +823,7 @@ contract VeriWorkCoreTest is CoreFixture {
 
     function _fundAs(address who, bytes32 campaignId, uint256 amount) internal {
         vm.prank(who);
-        core.fundCampaign(campaignId, amount);
+        core.fundCampaign(campaignId, amount, ANY_FEE);
     }
 
     function _badStatus(bytes32 batchId, IVeriWorkCore.BatchStatus expected, IVeriWorkCore.BatchStatus actual)
@@ -700,7 +844,7 @@ contract VeriWorkCoreTest is CoreFixture {
         address ubi_
     ) internal returns (VeriWorkCore) {
         return new VeriWorkCore(
-            IERC20(t), IIdentity(id), admin_, guardian_, operator_, treasury_, ubi_, CAP, FEE_BPS, STAKE
+            IERC20(t), IIdentity(id), admin_, guardian_, operator_, treasury_, ubi_, CAP, MAX_EPOCH, FEE_BPS, STAKE
         );
     }
 }

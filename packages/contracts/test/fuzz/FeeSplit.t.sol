@@ -52,7 +52,7 @@ contract FeeSplitFuzzTest is CoreFixture {
         vm.prank(admin);
         core.setModulePrice(1, price);
         vm.prank(root);
-        core.purchaseModule(1);
+        core.purchaseModule(1, type(uint256).max);
         assertEq(core.pendingUbi(), (price * 2000) / 10_000);
         assertEq(core.pendingUbi() + core.pendingTreasury(), price);
     }

@@ -2,7 +2,6 @@
 pragma solidity 0.8.38;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {IIdentity} from "./interfaces/IIdentity.sol";
@@ -12,19 +11,19 @@ import {FeeMath} from "./libraries/FeeMath.sol";
 import {IdentityLib} from "./libraries/IdentityLib.sol";
 import {TokenTransfers} from "./libraries/TokenTransfers.sol";
 import {WeekMath} from "./libraries/WeekMath.sol";
-import {GuardianPausable} from "./security/GuardianPausable.sol";
-import {RollingWindowBreaker} from "./security/RollingWindowBreaker.sol";
+import {CoreParameters} from "./core/CoreParameters.sol";
 
 /// @title VeriWorkCore
 /// @notice Verified-human micro-work settlement in G$: B2B campaign escrow, the AI-draft -> human-review ->
 ///         consensus -> settlement batch pipeline, weekly merkle epochs claimed by workers, the refundable weekly
 ///         stake, upskill modules, and fee routing with exactly 20% of every fee sent to the GoodDollar UBI pool.
 /// @dev Every value action resolves the GoodDollar whitelisted root of the caller at the block of the action; the
-///      root is the unique-human key and tokens always go to `msg.sender`. Deposits are credited by balance delta,
-///      payouts are pulled by their owners, every outflow passes the rolling-window breaker, and the solvency
-///      invariant is `gToken.balanceOf(this) >= accountedBalance()`.
-contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, ReentrancyGuardTransient {
-    using SafeERC20 for IERC20;
+///      root is the unique-human key and tokens always go to `msg.sender`. Every G$ transfer in or out moves at par
+///      (the payer pays exactly the amount and the payee receives all of it, so a G$ transfer fee can never take part
+///      of anyone's money), payouts are pulled by their owners, every outflow passes the rolling-window breaker, and
+///      the solvency invariant is `gToken.balanceOf(this) >= accountedBalance()`. Admin-set parameters and their
+///      setters live in {CoreParameters}.
+contract VeriWorkCore is CoreParameters, ReentrancyGuardTransient {
     using TokenTransfers for IERC20;
     using IdentityLib for IIdentity;
     using SafeCast for uint256;
@@ -38,44 +37,24 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     uint256 public constant BPS = FeeMath.BPS;
     /// @notice 20% of every fee goes to the UBI pool. Constant by design.
     uint256 public constant UBI_SHARE_BPS = FeeMath.UBI_SHARE_BPS;
-    /// @notice Upper bound of `platformFeeBps` (20%).
-    uint256 public constant MAX_PLATFORM_FEE_BPS = 2000;
     /// @notice Largest share of a weekly stake one slash can take (50%).
     uint256 public constant MAX_SLASH_BPS = 5000;
-    /// @notice Lower bound of `stakeAmount`.
-    uint256 public constant MIN_STAKE_AMOUNT = 10e18;
-    /// @notice Upper bound of `stakeAmount`.
-    uint256 public constant MAX_STAKE_AMOUNT = 100_000e18;
-    /// @notice Lower bound of `claimDelay` (the guardian veto window).
-    uint256 public constant MIN_CLAIM_DELAY = 1 hours;
-    /// @notice Upper bound of `claimDelay`.
-    uint256 public constant MAX_CLAIM_DELAY = 3 days;
-    /// @notice Lower bound of `claimWindow`.
-    uint256 public constant MIN_CLAIM_WINDOW = 14 days;
-    /// @notice Upper bound of `claimWindow`.
-    uint256 public constant MAX_CLAIM_WINDOW = 365 days;
     /// @notice Maximum number of batches one settlement may consume.
     uint256 public constant MAX_BATCHES_PER_EPOCH = 100;
     /// @notice Upper bound of a module price.
     uint256 public constant MAX_MODULE_PRICE = 10_000e18;
+    /// @notice A campaign's funds can only be withdrawn this long after its last funding, so funding and withdrawing
+    ///         cannot loop through the shared rolling outflow cap.
+    uint256 public constant CAMPAIGN_FUNDING_LOCK = 24 hours;
+    /// @notice Share of the rolling cap (30%) that discretionary outflows may fill: sponsor withdrawals, rewards-pool
+    ///         withdrawals and surplus sweeps only run while the rolling window stays within it, so claims, stake
+    ///         refunds and the fee flush always keep at least 70% of the cap.
+    uint256 public constant DISCRETIONARY_OUTFLOW_BPS = 3000;
 
     /// @notice The G$ token.
     IERC20 public immutable gToken;
     /// @notice GoodDollar IdentityV4, queried at the block of every value action.
     IIdentity public immutable identity;
-
-    /// @notice Receives 80% of platform revenue.
-    address public treasury;
-    /// @notice GoodDollar UBI pool (UBIScheme): 20% of revenue and 100% of slashed stakes.
-    address public ubiRecipient;
-    /// @notice Fee snapshotted by campaigns at their first funding.
-    uint16 public platformFeeBps;
-    /// @notice Weekly stake required from new deposits.
-    uint256 public stakeAmount;
-    /// @notice Delay between settlement (or re-root) and the opening of claims.
-    uint256 public claimDelay;
-    /// @notice How long an epoch stays claimable once open.
-    uint256 public claimWindow;
 
     /// @notice Available plus reserved G$ of every campaign.
     uint256 public totalCampaignEscrow;
@@ -83,7 +62,7 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     uint256 public totalEpochLiability;
     /// @notice Weekly stakes not yet withdrawn, net of slashes.
     uint256 public totalStaked;
-    /// @notice Bonus / incentive pool (sponsor top-ups, forfeited trial rewards, swept epochs).
+    /// @notice Bonus / incentive pool (sponsor top-ups, forfeited trial rewards, swept and cancelled epochs).
     uint256 public rewardsPool;
     /// @notice Revenue owed to the UBI pool, flushed by settlement or {flushRevenue}.
     uint256 public pendingUbi;
@@ -96,8 +75,8 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     mapping(uint256 weekId => mapping(address root => Stake)) private _stakes;
     /// @notice Cumulative amount already consumed (paid or forfeited) per epoch and account.
     mapping(uint256 epochId => mapping(address account => uint256)) public claimedAmount;
-    /// @notice True once a human (root) has received its one-time trial reward.
-    mapping(address root => bool) public trialRewardUsed;
+    /// @notice The only wallet of the human `root` whose trial earnings are paid (zero until its first trial claim).
+    mapping(address root => address wallet) public trialWalletOf;
     /// @notice Price of an upskill module in G$ wei (zero means not for sale).
     mapping(uint256 moduleId => uint256) public modulePrice;
     /// @notice True when the human `root` owns module `moduleId`.
@@ -107,10 +86,11 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     /// @param identity_ GoodDollar IdentityV4.
     /// @param admin Admin Safe (`DEFAULT_ADMIN_ROLE`).
     /// @param guardian Sentinel key (`GUARDIAN_ROLE`): pause and veto only.
-    /// @param operator Worker key (`OPERATOR_ROLE`): batches, settlement, slashing.
+    /// @param operator Worker key (`OPERATOR_ROLE`): batches, settlement, slashing, sweeps.
     /// @param treasury_ Receives 80% of platform revenue.
     /// @param ubiRecipient_ GoodDollar UBIScheme; receives 20% of revenue and 100% of slashed stakes.
     /// @param maxRollingOutflow_ Rolling 24-hour outflow cap.
+    /// @param maxEpochTotal_ Largest total one epoch may commit to.
     /// @param platformFeeBps_ Fee snapshotted by new campaigns (`<= MAX_PLATFORM_FEE_BPS`).
     /// @param stakeAmount_ Weekly stake in G$ wei (`[MIN_STAKE_AMOUNT, MAX_STAKE_AMOUNT]`).
     constructor(
@@ -122,58 +102,76 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         address treasury_,
         address ubiRecipient_,
         uint256 maxRollingOutflow_,
+        uint256 maxEpochTotal_,
         uint16 platformFeeBps_,
         uint256 stakeAmount_
-    ) GuardianPausable(admin, guardian, operator) RollingWindowBreaker(maxRollingOutflow_) {
+    )
+        CoreParameters(
+            admin,
+            guardian,
+            operator,
+            treasury_,
+            ubiRecipient_,
+            maxRollingOutflow_,
+            maxEpochTotal_,
+            platformFeeBps_,
+            stakeAmount_
+        )
+    {
         if (address(gToken_) == address(0) || address(identity_) == address(0)) {
             revert ZeroAddress();
         }
         gToken = gToken_;
         identity = identity_;
-        _setTreasury(treasury_);
-        _setUbiRecipient(ubiRecipient_);
-        _setPlatformFeeBps(platformFeeBps_);
-        _setStakeAmount(stakeAmount_);
-        _setClaimTiming(12 hours, 60 days);
         _setRoleAdmin(SPONSOR_ROLE, OPERATOR_ROLE);
     }
 
     // ------------------------------------------------------------------ campaigns
 
-    /// @notice Funds (and on first use creates) campaign `campaignId`; credits what actually arrived.
+    /// @notice Funds (and on first use creates) campaign `campaignId` with exactly `amount`.
     /// @dev Caller needs `SPONSOR_ROLE`. The first funder becomes the sponsor and the current `platformFeeBps` is
-    ///      snapshotted for the campaign.
-    function fundCampaign(bytes32 campaignId, uint256 amount)
+    ///      snapshotted for the campaign. Funding locks withdrawals for `CAMPAIGN_FUNDING_LOCK`.
+    /// @param maxFeeBps Most the sponsor accepts as the campaign fee (reverts with {PlatformFeeAboveMax}).
+    function fundCampaign(bytes32 campaignId, uint256 amount, uint16 maxFeeBps)
         external
         whenNotPaused
         nonReentrant
         onlyRole(SPONSOR_ROLE)
     {
-        _prepareFunding(campaignId, amount);
-        _creditCampaign(campaignId, gToken.pullReceived(msg.sender, amount));
+        _prepareFunding(campaignId, amount, maxFeeBps);
+        _creditCampaign(campaignId, amount);
+        gToken.pullExact(msg.sender, amount);
     }
 
-    /// @notice {fundCampaign} preceded by an EIP-2612 permit (tolerates a front-run permit).
-    function fundCampaignWithPermit(bytes32 campaignId, uint256 amount, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
-        external
-        whenNotPaused
-        nonReentrant
-        onlyRole(SPONSOR_ROLE)
-    {
-        _prepareFunding(campaignId, amount);
-        _creditCampaign(campaignId, gToken.pullReceivedWithPermit(msg.sender, amount, deadline, v, r, s));
+    /// @notice {fundCampaign} preceded by an EIP-2612 permit of `amount` (tolerates a front-run permit).
+    function fundCampaignWithPermit(
+        bytes32 campaignId,
+        uint256 amount,
+        uint16 maxFeeBps,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external whenNotPaused nonReentrant onlyRole(SPONSOR_ROLE) {
+        _prepareFunding(campaignId, amount, maxFeeBps);
+        _creditCampaign(campaignId, amount);
+        gToken.pullExactWithPermit(msg.sender, amount, amount, deadline, v, r, s);
     }
 
-    /// @notice Returns unreserved campaign funds to the sponsor (also after its `SPONSOR_ROLE` was revoked).
+    /// @notice Returns unreserved campaign funds to the sponsor (also after its `SPONSOR_ROLE` was revoked), from
+    ///         `CAMPAIGN_FUNDING_LOCK` after the campaign's last funding. Discretionary outflow (see
+    ///         `DISCRETIONARY_OUTFLOW_BPS`).
     function withdrawCampaign(bytes32 campaignId, uint256 amount) external whenNotPaused nonReentrant {
         Campaign storage c = _campaigns[campaignId];
         if (c.sponsor != msg.sender) revert NotCampaignSponsor(campaignId, msg.sender);
         if (amount == 0) revert ZeroAmount();
+        uint256 unlockAt = uint256(c.lastFundedAt) + CAMPAIGN_FUNDING_LOCK;
+        if (block.timestamp < unlockAt) revert CampaignFundsLocked(unlockAt);
         if (amount > c.available) revert InsufficientCampaignBalance(campaignId, c.available, amount);
         c.available -= amount.toUint128();
         totalCampaignEscrow -= amount;
         emit CampaignWithdrawn(campaignId, msg.sender, amount);
-        _payOut(msg.sender, amount);
+        _payOutDiscretionary(msg.sender, amount);
     }
 
     // ------------------------------------------------------------------ batch pipeline (operator)
@@ -246,6 +244,8 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
 
     /// @notice Settles week `epochId`: consumes the consensus batches, posts the merkle root of cumulative worker
     ///         allocations and routes the fees (20% UBI) in the same transaction.
+    /// @dev Only the week being closed (from its Saturday 12:00 UTC) or the previous week can be settled, and the
+    ///      total is capped by `maxEpochTotal`.
     /// @param batchIds Batches in `ConsensusReached` (at most `MAX_BATCHES_PER_EPOCH`; may be empty for a bonus-only
     ///        epoch).
     /// @param bonusAmount Bonus moved from the rewards pool into the epoch (five-day bonus etc.).
@@ -259,6 +259,7 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         (uint256 payoutTotal, uint256 feeTotal) = _settleBatches(epochId, batchIds);
         uint256 total = payoutTotal + bonusAmount;
         if (total == 0) revert EmptyEpoch(epochId);
+        if (total > maxEpochTotal) revert EpochTotalTooLarge(total, maxEpochTotal);
         rewardsPool -= bonusAmount;
         totalEpochLiability += total;
         e.merkleRoot = merkleRoot;
@@ -280,10 +281,11 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
 
     /// @notice Replaces the root of a vetoed epoch and restarts its claim delay and window (admin only).
     /// @dev Amounts already consumed stay recorded in `claimedAmount`, so the new tree can only top accounts up. A
-    ///      vetoed epoch is never swept (vetoing requires an unswept epoch and sweeping requires an unvetoed one).
+    ///      cancelled epoch cannot be re-rooted.
     function reRootEpoch(uint256 epochId, bytes32 newRoot) external onlyRole(DEFAULT_ADMIN_ROLE) {
         Epoch storage e = _epochs[epochId];
         if (!e.vetoed) revert EpochNotVetoed(epochId);
+        if (e.swept) revert EpochIsSwept(epochId);
         if (newRoot == bytes32(0)) revert ZeroHash();
         e.merkleRoot = newRoot;
         e.vetoed = false;
@@ -291,10 +293,19 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         emit EpochReRooted(epochId, newRoot, e.claimableAt, e.expiresAt);
     }
 
+    /// @notice Cancels a vetoed epoch that is wrong as a whole (admin only): its unclaimed remainder returns to the
+    ///         rewards pool at once and the epoch can never be claimed, re-rooted or swept. Allowed while paused.
+    function cancelEpoch(uint256 epochId) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        Epoch storage e = _existingEpoch(epochId);
+        if (!e.vetoed) revert EpochNotVetoed(epochId);
+        if (e.swept) revert EpochIsSwept(epochId);
+        emit EpochCancelled(epochId, _closeEpoch(e));
+    }
+
     /// @notice Claims the caller's earnings of one epoch. The caller must be a verified human (root or connected
     ///         wallet); the payout goes to the caller.
     /// @param amount Cumulative allocation of the caller in the epoch (trial part included).
-    /// @param trialAmount Part of `amount` earned before verification (paid once per human, else forfeited).
+    /// @param trialAmount Part of `amount` earned before verification (paid only to the human's trial wallet).
     function claim(uint256 epochId, uint256 amount, uint256 trialAmount, bytes32[] calldata proof)
         external
         whenNotPaused
@@ -316,43 +327,42 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         _payOut(msg.sender, payout);
     }
 
-    /// @notice Moves the unclaimed remainder of an expired epoch to the rewards pool. Callable by anyone.
+    /// @notice Moves the unclaimed remainder of an expired epoch to the rewards pool (operator or admin, so nobody
+    ///         sweeps while claims fail for outside reasons such as a paused G$).
     /// @dev A vetoed epoch is never swept: its fate belongs to the admin, who re-roots it (with the same root to
-    ///      simply restart the claim window, e.g. after a long pause).
-    function sweepExpiredEpoch(uint256 epochId) external whenNotPaused {
+    ///      simply restart the claim window, e.g. after a long pause) or cancels it.
+    function sweepExpiredEpoch(uint256 epochId) external whenNotPaused onlyOperatorOrAdmin {
         Epoch storage e = _existingEpoch(epochId);
         if (e.swept) revert EpochIsSwept(epochId);
         if (e.vetoed) revert EpochIsVetoed(epochId);
         if (block.timestamp < e.expiresAt) revert EpochNotExpired(epochId, e.expiresAt);
-        uint256 unclaimed = uint256(e.total) - e.claimed;
-        e.swept = true;
-        totalEpochLiability -= unclaimed;
-        rewardsPool += unclaimed;
-        emit EpochSwept(epochId, unclaimed);
+        emit EpochSwept(epochId, _closeEpoch(e));
     }
 
     // ------------------------------------------------------------------ weekly stake
 
     /// @notice Deposits this week's refundable stake (Monday 12:00 to Wednesday 12:00 UTC, one per human).
-    function depositStake() external whenNotPaused nonReentrant {
-        uint256 amount = _recordStake();
+    /// @param maxAmount Most the caller accepts to stake (reverts with {StakeAmountAboveMax}).
+    function depositStake(uint256 maxAmount) external whenNotPaused nonReentrant {
+        uint256 amount = _recordStake(maxAmount);
         gToken.pullExact(msg.sender, amount);
     }
 
     /// @notice {depositStake} preceded by an EIP-2612 permit (tolerates a front-run permit).
-    function depositStakeWithPermit(uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+    /// @param value Value signed in the permit; also the most the caller accepts to stake.
+    function depositStakeWithPermit(uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
         external
         whenNotPaused
         nonReentrant
     {
-        uint256 amount = _recordStake();
-        gToken.pullExactWithPermit(msg.sender, amount, deadline, v, r, s);
+        uint256 amount = _recordStake(value);
+        gToken.pullExactWithPermit(msg.sender, amount, value, deadline, v, r, s);
     }
 
     /// @notice Slashes a stake for poor QA outcomes (Saturday 12:00 to Sunday 12:00 UTC, once). 100% goes to UBI.
+    /// @dev Allowed while paused: it moves no tokens and its window would otherwise run out during a pause.
     function slashStake(uint256 weekId, address root, uint16 slashBps, bytes32 reasonHash)
         external
-        whenNotPaused
         onlyRole(OPERATOR_ROLE)
     {
         uint256 start = WeekMath.weekStart(weekId);
@@ -395,27 +405,29 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     }
 
     /// @notice Buys a module for the caller's human identity (once per root). Revenue is split 20/80 UBI/treasury.
-    function purchaseModule(uint256 moduleId) external whenNotPaused nonReentrant {
-        uint256 price = _recordPurchase(moduleId);
+    /// @param maxPrice Most the caller accepts to pay (reverts with {ModulePriceAboveMax}).
+    function purchaseModule(uint256 moduleId, uint256 maxPrice) external whenNotPaused nonReentrant {
+        uint256 price = _recordPurchase(moduleId, maxPrice);
         gToken.pullExact(msg.sender, price);
     }
 
     /// @notice {purchaseModule} preceded by an EIP-2612 permit (tolerates a front-run permit).
-    function purchaseModuleWithPermit(uint256 moduleId, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
+    /// @param value Value signed in the permit; also the most the caller accepts to pay.
+    function purchaseModuleWithPermit(uint256 moduleId, uint256 value, uint256 deadline, uint8 v, bytes32 r, bytes32 s)
         external
         whenNotPaused
         nonReentrant
     {
-        uint256 price = _recordPurchase(moduleId);
-        gToken.pullExactWithPermit(msg.sender, price, deadline, v, r, s);
+        uint256 price = _recordPurchase(moduleId, value);
+        gToken.pullExactWithPermit(msg.sender, price, value, deadline, v, r, s);
     }
 
     // ------------------------------------------------------------------ rewards pool and revenue
 
-    /// @notice Adds G$ to the rewards pool (anyone); credits what actually arrived.
+    /// @notice Adds exactly `amount` of G$ to the rewards pool (anyone).
     function fundRewardsPool(uint256 amount) external whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        _creditRewardsPool(gToken.pullReceived(msg.sender, amount));
+        _creditRewardsPool(amount);
+        gToken.pullExact(msg.sender, amount);
     }
 
     /// @notice {fundRewardsPool} preceded by an EIP-2612 permit (tolerates a front-run permit).
@@ -424,23 +436,23 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         whenNotPaused
         nonReentrant
     {
-        if (amount == 0) revert ZeroAmount();
-        _creditRewardsPool(gToken.pullReceivedWithPermit(msg.sender, amount, deadline, v, r, s));
+        _creditRewardsPool(amount);
+        gToken.pullExactWithPermit(msg.sender, amount, amount, deadline, v, r, s);
     }
 
-    /// @notice Withdraws from the rewards pool (admin).
+    /// @notice Withdraws from the rewards pool (admin). Discretionary outflow (see `DISCRETIONARY_OUTFLOW_BPS`).
     function withdrawRewardsPool(address to, uint256 amount)
         external
         whenNotPaused
         nonReentrant
         onlyRole(DEFAULT_ADMIN_ROLE)
     {
-        if (to == address(0)) revert ZeroAddress();
+        _requireRecipient(to);
         if (amount == 0) revert ZeroAmount();
         if (amount > rewardsPool) revert InsufficientRewardsPool(rewardsPool, amount);
         rewardsPool -= amount;
         emit RewardsPoolWithdrawn(to, amount);
-        _payOut(to, amount);
+        _payOutDiscretionary(to, amount);
     }
 
     /// @notice Sends pending revenue to the UBI pool and the treasury. Callable by anyone.
@@ -448,47 +460,15 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         _flushRevenue();
     }
 
-    /// @notice Sends G$ held above `accountedBalance()` (direct transfers, streams) to `to` (admin).
-    function sweepSurplus(address to) external whenNotPaused nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (to == address(0)) revert ZeroAddress();
-        uint256 amount = _surplus();
-        if (amount == 0) revert NoSurplus();
+    /// @notice Sends `amount` of the G$ held above `accountedBalance()` (direct transfers, streams) to `to` (admin).
+    ///         Discretionary outflow (see `DISCRETIONARY_OUTFLOW_BPS`): a large surplus is swept in parts.
+    function sweepSurplus(address to, uint256 amount) external whenNotPaused nonReentrant onlyRole(DEFAULT_ADMIN_ROLE) {
+        _requireRecipient(to);
+        if (amount == 0) revert ZeroAmount();
+        uint256 available = _surplus();
+        if (amount > available) revert InsufficientSurplus(available, amount);
         emit SurplusSwept(to, amount);
-        _payOut(to, amount);
-    }
-
-    // ------------------------------------------------------------------ admin setters
-
-    /// @notice Sets the fee snapshotted by campaigns created from now on.
-    function setPlatformFeeBps(uint16 newPlatformFeeBps) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setPlatformFeeBps(newPlatformFeeBps);
-    }
-
-    /// @notice Sets the weekly stake for deposits made from now on.
-    function setStakeAmount(uint256 newStakeAmount) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setStakeAmount(newStakeAmount);
-    }
-
-    /// @notice Sets the claim delay and claim window applied to epochs settled or re-rooted from now on.
-    function setClaimTiming(uint256 newClaimDelay, uint256 newClaimWindow) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setClaimTiming(newClaimDelay, newClaimWindow);
-    }
-
-    /// @notice Sets the rolling 24-hour outflow cap.
-    function setMaxRollingOutflow(uint256 newMaxRollingOutflow) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        uint256 previous = maxRollingOutflow;
-        _setMaxRollingOutflow(newMaxRollingOutflow);
-        emit ParameterUpdated("maxRollingOutflow", previous, newMaxRollingOutflow);
-    }
-
-    /// @notice Sets the UBI recipient (GoodDollar UBIScheme).
-    function setUbiRecipient(address newUbiRecipient) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setUbiRecipient(newUbiRecipient);
-    }
-
-    /// @notice Sets the treasury.
-    function setTreasury(address newTreasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        _setTreasury(newTreasury);
+        _payOutDiscretionary(to, amount);
     }
 
     // ------------------------------------------------------------------ views
@@ -501,6 +481,19 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
     /// @notice G$ held above `accountedBalance()` (zero when the balance is lower, e.g. after an admin burn).
     function surplus() external view nonReentrantView returns (uint256) {
         return _surplus();
+    }
+
+    /// @notice What sponsor withdrawals, rewards-pool withdrawals and surplus sweeps can still move right now: the
+    ///         part of `DISCRETIONARY_OUTFLOW_BPS` of the rolling cap that the current window has not used.
+    function remainingDiscretionaryCapacity() public view returns (uint256) {
+        uint256 limit = FeeMath.mulBps(maxRollingOutflow, DISCRETIONARY_OUTFLOW_BPS);
+        uint256 used = rollingOutflow();
+        return used >= limit ? 0 : limit - used;
+    }
+
+    /// @notice True once a wallet of the human `root` claimed trial earnings (see `trialWalletOf`).
+    function trialRewardUsed(address root) external view returns (bool) {
+        return trialWalletOf[root] != address(0);
     }
 
     /// @notice Current Wallet Week id.
@@ -549,7 +542,7 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
 
     // ------------------------------------------------------------------ internals: campaigns and batches
 
-    function _prepareFunding(bytes32 campaignId, uint256 amount) private {
+    function _prepareFunding(bytes32 campaignId, uint256 amount, uint16 maxFeeBps) private {
         if (campaignId == bytes32(0)) revert ZeroId();
         if (amount == 0) revert ZeroAmount();
         Campaign storage c = _campaigns[campaignId];
@@ -559,14 +552,15 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         } else if (c.sponsor != msg.sender) {
             revert NotCampaignSponsor(campaignId, msg.sender);
         }
+        if (c.feeBps > maxFeeBps) revert PlatformFeeAboveMax(c.feeBps, maxFeeBps);
     }
 
-    function _creditCampaign(bytes32 campaignId, uint256 received) private {
-        if (received == 0) revert ZeroAmount();
+    function _creditCampaign(bytes32 campaignId, uint256 amount) private {
         Campaign storage c = _campaigns[campaignId];
-        c.available = (uint256(c.available) + received).toUint128();
-        totalCampaignEscrow += received;
-        emit CampaignFunded(campaignId, msg.sender, received, c.feeBps);
+        c.available = (uint256(c.available) + amount).toUint128();
+        c.lastFundedAt = uint64(block.timestamp);
+        totalCampaignEscrow += amount;
+        emit CampaignFunded(campaignId, msg.sender, amount, c.feeBps);
     }
 
     function _release(Campaign storage c, uint256 amount) private {
@@ -595,8 +589,12 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         if (e.merkleRoot != bytes32(0)) revert EpochAlreadyExists(epochId);
         if (merkleRoot == bytes32(0)) revert ZeroHash();
         if (batchCount > MAX_BATCHES_PER_EPOCH) revert TooManyBatches(batchCount);
-        uint256 settleableAt = WeekMath.weekStart(epochId) + WeekMath.SLASH_WINDOW_START;
-        if (block.timestamp < settleableAt) revert EpochNotSettleable(epochId, settleableAt);
+        uint256 start = WeekMath.weekStart(epochId);
+        uint256 settleableFrom = start + WeekMath.SLASH_WINDOW_START;
+        uint256 settleableUntil = start + WeekMath.SETTLE_WINDOW_END;
+        if (block.timestamp < settleableFrom || block.timestamp >= settleableUntil) {
+            revert EpochNotSettleable(epochId, settleableFrom, settleableUntil);
+        }
         if (bonusAmount > rewardsPool) revert InsufficientRewardsPool(rewardsPool, bonusAmount);
     }
 
@@ -626,6 +624,14 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         _transition(batchId, b, BatchStatus.Settled);
     }
 
+    /// @dev Moves the unclaimed remainder of `e` to the rewards pool and closes it for good (sweep or cancel).
+    function _closeEpoch(Epoch storage e) private returns (uint256 unclaimed) {
+        unclaimed = uint256(e.total) - e.claimed;
+        e.swept = true;
+        totalEpochLiability -= unclaimed;
+        rewardsPool += unclaimed;
+    }
+
     function _processClaim(address root, uint256 epochId, uint256 amount, uint256 trialAmount, bytes32[] calldata proof)
         private
         returns (uint256 payout)
@@ -649,19 +655,24 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         emit Claimed(epochId, msg.sender, root, payout, forfeited);
     }
 
-    /// @dev Trial work is paid once per human: the first wallet of a root to claim trial earnings consumes the
-    ///      root's trial reward; later trial earnings of the same root are forfeited to the rewards pool.
+    /// @dev Trial work is paid once per human, to one wallet: the first wallet of a root to claim trial earnings
+    ///      becomes the root's trial wallet, whose trial earnings are paid in every epoch (a two-task trial can
+    ///      settle across two epochs). Trial earnings of any other wallet of the same root are forfeited to the
+    ///      rewards pool, with an event.
     function _applyTrialRule(address root, uint256 epochId, uint256 trialAmount, uint256 delta)
         private
         returns (uint256 forfeited)
     {
         if (trialAmount == 0) return 0;
-        if (!trialRewardUsed[root]) {
-            trialRewardUsed[root] = true;
+        address trialWallet = trialWalletOf[root];
+        if (trialWallet == address(0)) {
+            trialWalletOf[root] = msg.sender;
             emit TrialRewardConsumed(root, epochId, msg.sender);
             return 0;
         }
+        if (trialWallet == msg.sender) return 0;
         forfeited = trialAmount < delta ? trialAmount : delta;
+        emit TrialRewardForfeited(epochId, msg.sender, root, forfeited);
     }
 
     function _requireClaimable(uint256 epochId, Epoch storage e) private view {
@@ -686,33 +697,35 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
 
     // ------------------------------------------------------------------ internals: stake, modules, revenue
 
-    function _recordStake() private returns (uint256 amount) {
+    function _recordStake(uint256 maxAmount) private returns (uint256 amount) {
         address root = identity.requireRoot(msg.sender);
         uint256 weekId = WeekMath.weekId(block.timestamp);
         if (block.timestamp >= WeekMath.weekStart(weekId) + WeekMath.STAKE_DEPOSIT_WINDOW) revert StakeWindowClosed();
         Stake storage s = _stakes[weekId][root];
         if (s.account != address(0)) revert AlreadyStaked();
         amount = stakeAmount;
+        if (amount > maxAmount) revert StakeAmountAboveMax(amount, maxAmount);
         s.account = msg.sender;
         s.amount = amount.toUint128();
         totalStaked += amount;
         emit StakeDeposited(weekId, root, msg.sender, amount);
     }
 
-    function _recordPurchase(uint256 moduleId) private returns (uint256 price) {
+    function _recordPurchase(uint256 moduleId, uint256 maxPrice) private returns (uint256 price) {
         address root = identity.requireRoot(msg.sender);
         price = modulePrice[moduleId];
         if (price == 0) revert ModuleNotForSale(moduleId);
+        if (price > maxPrice) revert ModulePriceAboveMax(moduleId, price, maxPrice);
         if (hasModule[root][moduleId]) revert ModuleAlreadyOwned(root, moduleId);
         hasModule[root][moduleId] = true;
         _accrueRevenue(price);
         emit ModulePurchased(root, msg.sender, moduleId, price);
     }
 
-    function _creditRewardsPool(uint256 received) private {
-        if (received == 0) revert ZeroAmount();
-        rewardsPool += received;
-        emit RewardsPoolFunded(msg.sender, received);
+    function _creditRewardsPool(uint256 amount) private {
+        if (amount == 0) revert ZeroAmount();
+        rewardsPool += amount;
+        emit RewardsPoolFunded(msg.sender, amount);
     }
 
     function _accrueRevenue(uint256 revenue) private {
@@ -730,58 +743,32 @@ contract VeriWorkCore is IVeriWorkCore, GuardianPausable, RollingWindowBreaker, 
         _consumeOutflow(ubi + toTreasury);
         if (ubi != 0) {
             emit UbiContribution(ubiRecipient, ubi);
-            gToken.safeTransfer(ubiRecipient, ubi);
+            gToken.pushExact(ubiRecipient, ubi);
         }
         if (toTreasury != 0) {
             emit TreasuryRevenue(treasury, toTreasury);
-            gToken.safeTransfer(treasury, toTreasury);
+            gToken.pushExact(treasury, toTreasury);
         }
     }
 
     function _payOut(address to, uint256 amount) private {
         if (amount == 0) return;
         _consumeOutflow(amount);
-        gToken.safeTransfer(to, amount);
+        gToken.pushExact(to, amount);
+    }
+
+    /// @dev {_payOut} for sponsor withdrawals, rewards-pool withdrawals and surplus sweeps: they may only fill the
+    ///      rolling window up to `DISCRETIONARY_OUTFLOW_BPS` of the cap, so nobody holding campaign capital (nor the
+    ///      admin) can use up the capacity that claims, refunds and the fee flush rely on.
+    function _payOutDiscretionary(address to, uint256 amount) private {
+        uint256 available = remainingDiscretionaryCapacity();
+        if (amount > available) revert DiscretionaryOutflowLimitExceeded(amount, available);
+        _payOut(to, amount);
     }
 
     function _surplus() private view returns (uint256) {
         uint256 balance = gToken.balanceOf(address(this));
         uint256 accounted = accountedBalance();
         return balance > accounted ? balance - accounted : 0;
-    }
-
-    // ------------------------------------------------------------------ internals: parameters
-
-    function _setPlatformFeeBps(uint16 value) private {
-        if (value > MAX_PLATFORM_FEE_BPS) revert ParameterOutOfBounds("platformFeeBps", value);
-        emit ParameterUpdated("platformFeeBps", platformFeeBps, value);
-        platformFeeBps = value;
-    }
-
-    function _setStakeAmount(uint256 value) private {
-        if (value < MIN_STAKE_AMOUNT || value > MAX_STAKE_AMOUNT) revert ParameterOutOfBounds("stakeAmount", value);
-        emit ParameterUpdated("stakeAmount", stakeAmount, value);
-        stakeAmount = value;
-    }
-
-    function _setClaimTiming(uint256 delay, uint256 window) private {
-        if (delay < MIN_CLAIM_DELAY || delay > MAX_CLAIM_DELAY) revert ParameterOutOfBounds("claimDelay", delay);
-        if (window < MIN_CLAIM_WINDOW || window > MAX_CLAIM_WINDOW) revert ParameterOutOfBounds("claimWindow", window);
-        emit ParameterUpdated("claimDelay", claimDelay, delay);
-        emit ParameterUpdated("claimWindow", claimWindow, window);
-        claimDelay = delay;
-        claimWindow = window;
-    }
-
-    function _setUbiRecipient(address value) private {
-        if (value == address(0)) revert ZeroAddress();
-        emit RecipientUpdated("ubiRecipient", ubiRecipient, value);
-        ubiRecipient = value;
-    }
-
-    function _setTreasury(address value) private {
-        if (value == address(0)) revert ZeroAddress();
-        emit RecipientUpdated("treasury", treasury, value);
-        treasury = value;
     }
 }

@@ -8,7 +8,8 @@ import {IGoodDollar} from "../../src/interfaces/IGoodDollar.sol";
 /// @title MockGoodDollar
 /// @notice ERC20 + EIP-2612 stand-in for G$ (EIP-712 name "GoodDollar", version "1") with switches that simulate the
 ///         real token's admin powers: pause (`SUPER_GOODDOLLAR_PAUSED`), blocklist (`SUPER_GOODDOLLAR_BLOCKED`),
-///         `adminBurn`, an optional transfer fee (recipient receives `amount - fee`, like `setFormula`) and an
+///         `adminBurn`, an optional transfer fee installed with `setFormula` (receiver-pays: the recipient receives
+///         `amount - fee`; sender-pays: the recipient receives `amount` and the sender pays `amount + fee`) and an
 ///         optional one-shot transfer hook that simulates a malicious upgrade re-entering the caller.
 contract MockGoodDollar is ERC20, ERC20Permit, IGoodDollar {
     uint256 private constant BPS = 10_000;
@@ -20,6 +21,7 @@ contract MockGoodDollar is ERC20, ERC20Permit, IGoodDollar {
 
     uint256 public feeBps;
     address public feeRecipient;
+    bool public senderPaysFee;
 
     address public hookTarget;
     bytes public hookData;
@@ -40,10 +42,19 @@ contract MockGoodDollar is ERC20, ERC20Permit, IGoodDollar {
         isBlocked[account] = value;
     }
 
-    /// @notice Enables a fee-on-transfer formula: the recipient receives `amount - amount * bps / 10_000`.
+    /// @notice Enables a receiver-pays formula: the recipient receives `amount - amount * bps / 10_000`.
     function setFee(uint256 bps, address recipient) external {
         feeBps = bps;
         feeRecipient = recipient;
+        senderPaysFee = false;
+    }
+
+    /// @notice Enables a sender-pays formula (`getTxFees` returning `senderPays = true`): the recipient receives
+    ///         `amount` and the sender additionally pays `amount * bps / 10_000` to `recipient`.
+    function setSenderPaysFee(uint256 bps, address recipient) external {
+        feeBps = bps;
+        feeRecipient = recipient;
+        senderPaysFee = true;
     }
 
     /// @notice Arms a one-shot call to `target` with `data`, executed inside the next transfer (re-entrancy probe).
@@ -69,7 +80,7 @@ contract MockGoodDollar is ERC20, ERC20Permit, IGoodDollar {
         if (fee > 0) {
             super._update(from, feeRecipient, fee);
         }
-        super._update(from, to, value - fee);
+        super._update(from, to, senderPaysFee ? value : value - fee);
     }
 
     function _runHook() private {

@@ -41,11 +41,39 @@ contract TokenTransfersTest is PermitSigner {
         assertEq(token.balanceOf(user), 900e18);
     }
 
-    function test_pullExact_revertsOnFeeOnTransfer() public {
+    /// @notice A receiver-pays fee would credit less than the payer paid: the pull reverts.
+    function test_pullExact_revertsOnReceiverFee() public {
         token.setFee(100, feeSink); // 1 %
         _approve(100e18);
-        vm.expectRevert(TokenTransfers.FeeOnTransferNotSupported.selector);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 99e18, 100e18));
         harness.pullExact(_t(), user, 100e18);
+    }
+
+    /// @notice Regression: a sender-pays fee would charge the payer `amount + fee`; the pull reverts instead of
+    ///         taking the fee from the payer.
+    function test_pullExact_revertsOnSenderFee() public {
+        token.setSenderPaysFee(100, feeSink);
+        _approve(type(uint256).max);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 101e18, 100e18));
+        harness.pullExact(_t(), user, 100e18);
+        assertEq(token.balanceOf(user), 1000e18);
+    }
+
+    function testFuzz_pullExact_revertsForAnyFee(uint256 amount, uint16 feeBps, bool senderPays) public {
+        amount = bound(amount, 1e18, 400e18);
+        feeBps = uint16(bound(feeBps, 1, 5000));
+        uint256 fee = (amount * feeBps) / 10_000; // > 0 for these bounds
+        _approve(type(uint256).max);
+        if (senderPays) {
+            token.setSenderPaysFee(feeBps, feeSink);
+            vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, amount + fee, amount));
+        } else {
+            token.setFee(feeBps, feeSink);
+            vm.expectRevert(
+                abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, amount - fee, amount)
+            );
+        }
+        harness.pullExact(_t(), user, amount);
     }
 
     function test_pullExact_ignoresPreexistingBalance() public {
@@ -72,30 +100,72 @@ contract TokenTransfersTest is PermitSigner {
         harness.pullExact(_t(), user, 1e18);
     }
 
-    // ---------------------------------------------------------------- pullReceived
+    // ---------------------------------------------------------------- pushExact
 
-    function test_pullReceived_creditsBalanceDelta() public {
-        _approve(100e18);
-        assertEq(harness.pullReceived(_t(), user, 100e18), 100e18);
+    function test_pushExact_sendsExactAmount() public {
+        token.mint(address(harness), 100e18);
+        harness.pushExact(_t(), user, 40e18);
+        assertEq(token.balanceOf(address(harness)), 60e18);
+        assertEq(token.balanceOf(user), 1040e18);
     }
 
-    function test_pullReceived_creditsNetOfTransferFee() public {
-        token.setFee(250, feeSink); // 2.5 %
-        _approve(200e18);
-        uint256 received = harness.pullReceived(_t(), user, 200e18);
-        assertEq(received, 195e18);
-        assertEq(token.balanceOf(feeSink), 5e18);
+    /// @notice Regression: a receiver-pays fee would take part of what the recipient is owed (a worker's claim, a
+    ///         refund, UBIScheme's exact 20%); the payout reverts and nothing leaves.
+    function test_pushExact_revertsWhenTheReceiverPaysAFee() public {
+        token.mint(address(harness), 100e18);
+        token.setFee(100, feeSink); // 1 %, taken from what the recipient receives
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 99e18, 100e18));
+        harness.pushExact(_t(), user, 100e18);
+        token.setFee(10_000, feeSink); // nothing would arrive
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 0, 100e18));
+        harness.pushExact(_t(), user, 100e18);
+        assertEq(token.balanceOf(address(harness)), 100e18);
+        assertEq(token.balanceOf(feeSink), 0);
     }
 
-    function testFuzz_pullReceived_equalsDelta(uint256 amount, uint16 feeBps) public {
-        amount = bound(amount, 1, 1000e18);
-        feeBps = uint16(bound(feeBps, 0, 5000));
+    /// @notice When the recipient is the fee recipient itself it still receives the whole amount, so nothing is
+    ///         taken from anyone and the payout goes through.
+    function test_pushExact_feeRecipientReceivesTheWholeAmount() public {
+        token.mint(address(harness), 100e18);
+        token.setFee(100, user);
+        harness.pushExact(_t(), user, 100e18);
+        assertEq(token.balanceOf(user), 1100e18);
+        assertEq(token.balanceOf(address(harness)), 0);
+    }
+
+    function testFuzz_pushExact_revertsForAnyReceiverFee(uint256 amount, uint16 feeBps) public {
+        amount = bound(amount, 1e18, 1000e18);
+        feeBps = uint16(bound(feeBps, 1, 10_000));
+        token.mint(address(harness), amount);
         token.setFee(feeBps, feeSink);
-        _approve(amount);
-        uint256 before = token.balanceOf(address(harness));
-        uint256 received = harness.pullReceived(_t(), user, amount);
-        assertEq(received, token.balanceOf(address(harness)) - before);
-        assertEq(received, amount - (amount * feeBps) / 10_000);
+        uint256 fee = (amount * feeBps) / 10_000; // > 0 for these bounds
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, amount - fee, amount));
+        harness.pushExact(_t(), user, amount);
+    }
+
+    /// @notice Regression: a sender-pays formula makes a payout cost `amount + fee`; it must revert instead of
+    ///         taking the fee out of other users' funds.
+    function test_pushExact_revertsWhenTheSenderPaysAFee() public {
+        token.mint(address(harness), 1000e18);
+        token.setSenderPaysFee(100, feeSink);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 101e18, 100e18));
+        harness.pushExact(_t(), user, 100e18);
+    }
+
+    function test_pushExact_revertsWhenTheBalanceDoesNotDrop() public {
+        token.mint(address(harness), 10e18);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 0, 10e18));
+        harness.pushExact(_t(), address(harness), 10e18); // a self-transfer moves nothing
+    }
+
+    function testFuzz_pushExact_revertsForAnySenderFee(uint256 amount, uint16 feeBps) public {
+        amount = bound(amount, 1e18, 1000e18);
+        feeBps = uint16(bound(feeBps, 1, 5000));
+        token.mint(address(harness), 2 * amount);
+        token.setSenderPaysFee(feeBps, feeSink);
+        uint256 fee = (amount * feeBps) / 10_000; // > 0 for these bounds
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, amount + fee, amount));
+        harness.pushExact(_t(), user, amount);
     }
 
     // ---------------------------------------------------------------- permit variants
@@ -103,53 +173,55 @@ contract TokenTransfersTest is PermitSigner {
     function test_pullExactWithPermit_usesFreshPermit() public {
         PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 50e18, block.timestamp + 1 hours);
         vm.prank(user);
-        harness.pullExactWithPermit(_t(), user, 50e18, sig.deadline, sig.v, sig.r, sig.s);
+        harness.pullExactWithPermit(_t(), user, 50e18, 50e18, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(token.balanceOf(address(harness)), 50e18);
         assertEq(token.nonces(user), 1);
+    }
+
+    function test_pullExactWithPermit_pullsLessThanTheSignedCap() public {
+        PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 80e18, block.timestamp + 1 hours);
+        harness.pullExactWithPermit(_t(), user, 50e18, 80e18, sig.deadline, sig.v, sig.r, sig.s);
+        assertEq(token.balanceOf(address(harness)), 50e18);
+        assertEq(token.allowance(user, address(harness)), 30e18, "the rest of the signed value stays approved");
     }
 
     function test_pullExactWithPermit_continuesWhenPermitWasFrontRun() public {
         PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 50e18, block.timestamp + 1 hours);
         // A griefer submits the signature first: the nonce is consumed and the allowance is already in place.
         IERC20Permit(address(token)).permit(user, address(harness), 50e18, sig.deadline, sig.v, sig.r, sig.s);
-        harness.pullExactWithPermit(_t(), user, 50e18, sig.deadline, sig.v, sig.r, sig.s);
+        harness.pullExactWithPermit(_t(), user, 50e18, 50e18, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(token.balanceOf(address(harness)), 50e18);
     }
 
     function test_pullExactWithPermit_continuesWithInvalidPermitWhenApproved() public {
         _approve(50e18);
-        harness.pullExactWithPermit(_t(), user, 50e18, block.timestamp, 27, bytes32(0), bytes32(0));
-        assertEq(token.balanceOf(address(harness)), 50e18);
+        harness.pullExactWithPermit(_t(), user, 50e18, 70e18, block.timestamp, 27, bytes32(0), bytes32(0));
+        assertEq(token.balanceOf(address(harness)), 50e18, "the fallback only needs the pulled amount approved");
     }
 
     function test_pullExactWithPermit_revertsWhenPermitFailsAndAllowanceTooLow() public {
         _approve(10e18);
         vm.expectRevert(abi.encodeWithSelector(TokenTransfers.PermitFailed.selector, 10e18, 50e18));
-        harness.pullExactWithPermit(_t(), user, 50e18, block.timestamp, 27, bytes32(0), bytes32(0));
+        harness.pullExactWithPermit(_t(), user, 50e18, 50e18, block.timestamp, 27, bytes32(0), bytes32(0));
     }
 
     function test_pullExactWithPermit_revertsOnExpiredPermit() public {
         PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 50e18, block.timestamp - 1);
         vm.expectRevert(abi.encodeWithSelector(TokenTransfers.PermitFailed.selector, 0, 50e18));
-        harness.pullExactWithPermit(_t(), user, 50e18, sig.deadline, sig.v, sig.r, sig.s);
+        harness.pullExactWithPermit(_t(), user, 50e18, 50e18, sig.deadline, sig.v, sig.r, sig.s);
     }
 
     function test_pullExactWithPermit_permitForOtherValueDoesNotAuthorize() public {
         PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 40e18, block.timestamp + 1);
         vm.expectRevert(abi.encodeWithSelector(TokenTransfers.PermitFailed.selector, 0, 50e18));
-        harness.pullExactWithPermit(_t(), user, 50e18, sig.deadline, sig.v, sig.r, sig.s);
+        harness.pullExactWithPermit(_t(), user, 50e18, 50e18, sig.deadline, sig.v, sig.r, sig.s);
     }
 
-    function test_pullReceivedWithPermit_creditsDelta() public {
+    function test_pullExactWithPermit_failsClosedUnderAFee() public {
         token.setFee(1000, feeSink); // 10 %
         PermitSig memory sig = _signPermit(address(token), userKey, address(harness), 80e18, block.timestamp + 1);
-        uint256 received = harness.pullReceivedWithPermit(_t(), user, 80e18, sig.deadline, sig.v, sig.r, sig.s);
-        assertEq(received, 72e18);
-    }
-
-    function test_pullReceivedWithPermit_revertsWhenPermitFailsAndAllowanceTooLow() public {
-        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.PermitFailed.selector, 0, 1e18));
-        harness.pullReceivedWithPermit(_t(), user, 1e18, block.timestamp, 27, bytes32(0), bytes32(0));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 72e18, 80e18));
+        harness.pullExactWithPermit(_t(), user, 80e18, 80e18, sig.deadline, sig.v, sig.r, sig.s);
     }
 
     // ---------------------------------------------------------------- helpers

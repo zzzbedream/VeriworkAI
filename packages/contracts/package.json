@@ -6,8 +6,9 @@
   "scripts": {
     "build": "forge build",
     "test": "forge test",
-    "test:fork": "forge test --match-path \"test/fork/*\" -vvv",
+    "test:fork": "node scripts/test-fork.mjs",
     "coverage": "forge coverage --report summary --no-match-coverage \"(test|script)/\"",
+    "coverage:check": "forge coverage --report summary --report lcov --no-match-coverage \"(test|script)/\" && node scripts/check-coverage.mjs lcov.info --min-lines 80 --min-branches 80",
     "fmt": "forge fmt",
     "lint": "forge fmt --check"
   }

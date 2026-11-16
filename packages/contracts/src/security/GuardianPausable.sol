@@ -26,7 +26,13 @@ abstract contract GuardianPausable is AccessControl, Pausable {
 
     /// @dev Restricts a function to the guardian or the admin.
     modifier onlyGuardianOrAdmin() {
-        _checkGuardianOrAdmin();
+        _checkRoleOrAdmin(GUARDIAN_ROLE);
+        _;
+    }
+
+    /// @dev Restricts a function to the operator or the admin.
+    modifier onlyOperatorOrAdmin() {
+        _checkRoleOrAdmin(OPERATOR_ROLE);
         _;
     }
 
@@ -40,9 +46,10 @@ abstract contract GuardianPausable is AccessControl, Pausable {
         _unpause();
     }
 
-    function _checkGuardianOrAdmin() internal view {
-        if (!hasRole(GUARDIAN_ROLE, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
-            revert AccessControlUnauthorizedAccount(msg.sender, GUARDIAN_ROLE);
+    /// @dev Reverts with `AccessControlUnauthorizedAccount(caller, role)` unless the caller holds `role` or is admin.
+    function _checkRoleOrAdmin(bytes32 role) internal view {
+        if (!hasRole(role, msg.sender) && !hasRole(DEFAULT_ADMIN_ROLE, msg.sender)) {
+            revert AccessControlUnauthorizedAccount(msg.sender, role);
         }
     }
 }

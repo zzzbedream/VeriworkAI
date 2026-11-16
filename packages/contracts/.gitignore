@@ -1,2 +1,4 @@
 # Deployment simulations (forge script without --broadcast) are not records of real deployments.
 deployments/*.dry-run.json
+# Coverage reports (forge coverage --report lcov).
+lcov.info

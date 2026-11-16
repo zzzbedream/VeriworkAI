@@ -6,7 +6,8 @@ pragma solidity 0.8.38;
 ///         that VeriWork reads off-chain and in tests. The ERC20 + EIP-2612 surface is consumed via OpenZeppelin's
 ///         `IERC20` / `IERC20Permit` (domain: name `GoodDollar`, version `1`, chainId 42220, no EIP-5267).
 /// @dev The GoodDollar DAO can pause the token, block addresses, `adminBurn` any balance, enable transfer fees and
-///      upgrade the implementation. VeriWork therefore credits deposits by balance delta and pays by pull.
+///      upgrade the implementation. VeriWork therefore moves G$ only at par (both balance deltas are checked, so a
+///      transfer fee makes the transfer revert instead of taking part of anyone's money) and pays by pull.
 interface IGoodDollar {
     /// @notice Raised by every transfer, mint and burn while the token is paused (selector `0x7f66be17`).
     error SUPER_GOODDOLLAR_PAUSED();

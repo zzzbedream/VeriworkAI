@@ -14,12 +14,14 @@ interface IVeriWorkCore {
         Cancelled
     }
 
-    /// @notice B2B escrow. `feeBps` is snapshotted at the first funding.
+    /// @notice B2B escrow. `feeBps` is snapshotted at the first funding; `lastFundedAt` (packed with `feeBps`) starts
+    ///         the 24-hour lock on withdrawals.
     struct Campaign {
         address sponsor;
         uint128 available;
         uint128 reserved;
         uint16 feeBps;
+        uint64 lastFundedAt;
     }
 
     /// @notice A unit of work paid from one campaign; `resultsHash` commits to the accepted dataset and QA record.
@@ -59,8 +61,10 @@ interface IVeriWorkCore {
         bytes32[] proof;
     }
 
-    /// @notice An amount argument (or the amount actually received) is zero.
+    /// @notice An amount argument is zero.
     error ZeroAmount();
+    /// @notice A payout recipient cannot be the contract itself (the transfer would move nothing).
+    error InvalidRecipient(address recipient);
     /// @notice A campaign or batch id is zero.
     error ZeroId();
     /// @notice A merkle root or results hash is zero.
@@ -71,18 +75,25 @@ interface IVeriWorkCore {
     error NotCampaignSponsor(bytes32 campaignId, address caller);
     /// @notice The campaign's unreserved balance does not cover the request.
     error InsufficientCampaignBalance(bytes32 campaignId, uint256 available, uint256 required);
+    /// @notice The campaign was funded less than 24 hours ago; its funds can be withdrawn from `unlockAt`.
+    error CampaignFundsLocked(uint256 unlockAt);
+    /// @notice The campaign's fee is above the most the sponsor accepted.
+    error PlatformFeeAboveMax(uint256 feeBps, uint256 maxFeeBps);
     /// @notice The batch is not in the status the call requires.
     error InvalidBatchStatus(bytes32 batchId, BatchStatus expected, BatchStatus actual);
     /// @notice The consensus payout is above the batch's maximum.
     error PayoutExceedsMax(bytes32 batchId, uint256 payout, uint256 maxPayout);
     /// @notice The epoch was already settled.
     error EpochAlreadyExists(uint256 epochId);
-    /// @notice The week's QA window (Saturday 12:00 UTC) has not started yet.
-    error EpochNotSettleable(uint256 epochId, uint256 settleableAt);
+    /// @notice A week can only be settled in `[settleableFrom, settleableUntil)`: from its Saturday 12:00 UTC (QA
+    ///         close) until the end of the following week.
+    error EpochNotSettleable(uint256 epochId, uint256 settleableFrom, uint256 settleableUntil);
     /// @notice More batches than `MAX_BATCHES_PER_EPOCH`.
     error TooManyBatches(uint256 count);
     /// @notice The epoch would pay nothing.
     error EmptyEpoch(uint256 epochId);
+    /// @notice The epoch total is above the admin-set `maxEpochTotal`.
+    error EpochTotalTooLarge(uint256 total, uint256 max);
     /// @notice The rewards pool does not cover the request.
     error InsufficientRewardsPool(uint256 available, uint256 required);
     /// @notice The epoch has not been settled.
@@ -109,6 +120,8 @@ interface IVeriWorkCore {
     error NoClaimRequests();
     /// @notice Stakes are only accepted from Monday 12:00 to Wednesday 12:00 UTC.
     error StakeWindowClosed();
+    /// @notice The weekly stake is above the most the caller accepted.
+    error StakeAmountAboveMax(uint256 stakeAmount, uint256 maxAmount);
     /// @notice This human already staked this week.
     error AlreadyStaked();
     /// @notice No stake for this human in this week.
@@ -127,8 +140,13 @@ interface IVeriWorkCore {
     error ModuleNotForSale(uint256 moduleId);
     /// @notice This human already owns the module.
     error ModuleAlreadyOwned(address root, uint256 moduleId);
-    /// @notice The contract holds no G$ above its accounted balance.
-    error NoSurplus();
+    /// @notice The module price is above the most the caller accepted.
+    error ModulePriceAboveMax(uint256 moduleId, uint256 price, uint256 maxPrice);
+    /// @notice The G$ held above `accountedBalance()` does not cover the request.
+    error InsufficientSurplus(uint256 available, uint256 required);
+    /// @notice A sponsor withdrawal, rewards-pool withdrawal or surplus sweep would fill the rolling window beyond
+    ///         `DISCRETIONARY_OUTFLOW_BPS` of the cap; `available` is what such outflows can still move now.
+    error DiscretionaryOutflowLimitExceeded(uint256 requested, uint256 available);
 
     event CampaignFunded(bytes32 indexed campaignId, address indexed sponsor, uint256 received, uint16 feeBps);
     event CampaignWithdrawn(bytes32 indexed campaignId, address indexed sponsor, uint256 amount);
@@ -149,11 +167,17 @@ interface IVeriWorkCore {
     event EpochVetoed(uint256 indexed epochId, address indexed by);
     event EpochReRooted(uint256 indexed epochId, bytes32 newRoot, uint64 claimableAt, uint64 expiresAt);
     event EpochSwept(uint256 indexed epochId, uint256 amount);
+    /// @notice A vetoed epoch was cancelled: its unclaimed `amount` moved to the rewards pool.
+    event EpochCancelled(uint256 indexed epochId, uint256 amount);
     event Claimed(
         uint256 indexed epochId, address indexed account, address indexed root, uint256 payout, uint256 forfeited
     );
-    /// @notice The human `root` received its one-time trial reward through `account`.
+    /// @notice The human `root` used its one-time trial reward with `account`: from now on only that wallet's trial
+    ///         earnings are paid (in any epoch).
     event TrialRewardConsumed(address indexed root, uint256 indexed epochId, address indexed account);
+    /// @notice `amount` of trial earnings of `account` went to the rewards pool because another wallet already used
+    ///         the trial reward of `root`.
+    event TrialRewardForfeited(uint256 indexed epochId, address indexed account, address indexed root, uint256 amount);
     event StakeDeposited(uint256 indexed weekId, address indexed root, address indexed account, uint256 amount);
     event StakeSlashed(uint256 indexed weekId, address indexed root, uint256 amount, bytes32 reasonHash);
     event StakeWithdrawn(uint256 indexed weekId, address indexed root, address indexed account, uint256 amount);

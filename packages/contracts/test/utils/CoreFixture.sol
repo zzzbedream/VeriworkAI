@@ -18,7 +18,10 @@ abstract contract CoreFixture is PermitSigner {
     uint256 internal constant SATURDAY = T0 + 5 days;
     uint256 internal constant SUNDAY = T0 + 6 days;
     uint256 internal constant CAP = 1_000_000e18;
+    uint256 internal constant MAX_EPOCH = 1_000_000e18;
     uint16 internal constant FEE_BPS = 1000;
+    /// @dev A `maxFeeBps` that accepts any campaign fee (the contract's upper bound).
+    uint16 internal constant ANY_FEE = 2000;
     uint256 internal constant STAKE = 150e18;
     uint256 internal constant BALANCE = 1_000_000e18;
     bytes32 internal constant CAMPAIGN = keccak256("campaign-1");
@@ -77,6 +80,7 @@ abstract contract CoreFixture is PermitSigner {
             treasury,
             ubi,
             CAP,
+            MAX_EPOCH,
             FEE_BPS,
             STAKE
         );
@@ -92,7 +96,7 @@ abstract contract CoreFixture is PermitSigner {
 
     function _fund(bytes32 campaignId, uint256 amount) internal {
         vm.prank(sponsor);
-        core.fundCampaign(campaignId, amount);
+        core.fundCampaign(campaignId, amount, ANY_FEE);
     }
 
     function _open(bytes32 batchId, uint128 maxPayout) internal {

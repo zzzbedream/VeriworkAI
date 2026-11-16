@@ -7,16 +7,27 @@ import {IGoodDollar} from "../../src/interfaces/IGoodDollar.sol";
 import {IIdentity} from "../../src/interfaces/IIdentity.sol";
 import {EpochMerkle} from "../../src/libraries/EpochMerkle.sol";
 import {IdentityLib} from "../../src/libraries/IdentityLib.sol";
+import {TokenTransfers} from "../../src/libraries/TokenTransfers.sol";
 import {WeekMath} from "../../src/libraries/WeekMath.sol";
 import {AgentRegistry} from "../../src/AgentRegistry.sol";
 import {IVeriWorkCore} from "../../src/interfaces/IVeriWorkCore.sol";
 import {VeriWorkCore} from "../../src/VeriWorkCore.sol";
+import {MockFeeFormula} from "../mocks/MockFeeFormula.sol";
+import {AgentConsent} from "../utils/AgentConsent.sol";
 import {MerkleHelper} from "../utils/MerkleHelper.sol";
 import {PermitSigner} from "../utils/PermitSigner.sol";
 
+/// @notice Fee formula of the real SuperGoodDollar; `setFormula` is owner-only (the GoodDollar Avatar).
+interface ISuperGoodDollarFees {
+    function setFormula(address formula) external;
+    function formula() external view returns (address);
+    function feeRecipient() external view returns (address);
+}
+
 /// @notice End-to-end tests against real Celo mainnet state (G$ SuperGoodDollar, IdentityV4, UBIScheme) at a pinned
-///         block. Skipped unless `RUN_FORK_TESTS=true`; RPC from `CELO_RPC_URL` (default forno). G$ is only moved by
-///         impersonating a funded EOA, never with `deal()` (Superfluid balances are not plain storage).
+///         block. Skipped unless `RUN_FORK_TESTS=true` (`pnpm test:fork` sets it); RPC from `CELO_RPC_URL` (default
+///         forno). G$ is only moved by impersonating a funded EOA, never with `deal()` (Superfluid balances are not
+///         plain storage).
 contract CeloMainnetForkTest is PermitSigner {
     uint256 internal constant FORK_BLOCK = 82_845_950;
     uint256 internal constant FORK_TIMESTAMP = 1_794_746_708; // Sunday 2026-11-15T12:45:08Z, week 2966
@@ -25,6 +36,7 @@ contract CeloMainnetForkTest is PermitSigner {
     IERC20 internal constant G = IERC20(0x62B8B11039FcfE5aB0C56E502b1C372A3d2a9c7A);
     IIdentity internal constant IDENTITY = IIdentity(0xC361A6E67822a0EDc17D899227dd9FC50BD62F42);
     address internal constant UBI_SCHEME = 0x43d72Ff17701B2DA814620735C39C620Ce0ea4A1;
+    address internal constant AVATAR = 0x495d133B938596C9984d462F007B676bDc57eCEC;
     address internal constant WHALE = 0xf8B4c7098D195D12c1336A09fDDaa9aFa11Bd097;
     address internal constant ROOT = 0xB2F17f55e1378BFbeAC04c7302d2e52a1a83E00A;
     address internal constant CONNECTED = 0x68dcf65c7AbAe41a53b686eFe44889F8Bf93B277;
@@ -34,6 +46,9 @@ contract CeloMainnetForkTest is PermitSigner {
     address internal constant BLOCKED = 0x288dc841A52FCA2707c6947B3A777c5E56cd87BC;
     address internal constant ROOT_7702 = 0xB2914810724FE2Fb871960eB200Dea427854b1C7;
     bytes32 internal constant CAMPAIGN = keccak256("fork-campaign");
+    bytes32 internal constant CARD = keccak256("agent-card");
+
+    event TrialRewardForfeited(uint256 indexed epochId, address indexed account, address indexed root, uint256 amount);
 
     address internal admin = makeAddr("adminSafe");
     address internal guardian = makeAddr("guardian");
@@ -56,9 +71,10 @@ contract CeloMainnetForkTest is PermitSigner {
         forkEnabled = vm.envOr("RUN_FORK_TESTS", false);
         if (!forkEnabled) return;
         vm.createSelectFork(vm.envOr("CELO_RPC_URL", string("https://forno.celo.org")), FORK_BLOCK);
-        core =
-            new VeriWorkCore(G, IDENTITY, admin, guardian, operator, treasury, UBI_SCHEME, 5_000_000e18, 1000, 150e18);
-        registry = new AgentRegistry(G, IDENTITY, admin, guardian, operator, UBI_SCHEME, 250e18, 250_000e18);
+        core = new VeriWorkCore(
+            G, IDENTITY, admin, guardian, operator, treasury, UBI_SCHEME, 200_000e18, 100_000e18, 1000, 150e18
+        );
+        registry = new AgentRegistry(G, IDENTITY, admin, guardian, operator, UBI_SCHEME, 250e18, 10_000e18);
     }
 
     // ------------------------------------------------------------------ fixtures
@@ -97,7 +113,7 @@ contract CeloMainnetForkTest is PermitSigner {
         (accounts[1], amounts[1], trials[1]) = (CONNECTED, 1000e18, 300e18); // escrowed trial work
         (accounts[2], amounts[2]) = (EXPIRED_ROOT, 500e18);
         (accounts[3], amounts[3]) = (ROOT_7702, 500e18);
-        bytes32[] memory leaves = _leaves(accounts, amounts, trials);
+        bytes32[] memory leaves = _leaves(EPOCH, accounts, amounts, trials);
 
         uint256 ubiBefore = G.balanceOf(UBI_SCHEME); // UBIScheme has an inbound stream: measure within one block
         vm.prank(operator);
@@ -107,10 +123,10 @@ contract CeloMainnetForkTest is PermitSigner {
         assertGe(G.balanceOf(address(core)), core.accountedBalance());
 
         vm.warp(block.timestamp + core.claimDelay());
-        _claimAndCheck(accounts, amounts, trials, leaves, 0, 2000e18); // root
-        _claimAndCheck(accounts, amounts, trials, leaves, 1, 1000e18); // connected wallet, first trial of the human
-        assertTrue(core.trialRewardUsed(ROOT));
-        _claimAndCheck(accounts, amounts, trials, leaves, 3, 500e18); // EIP-7702 account: plain transfer works
+        _claimAndCheck(EPOCH, accounts, amounts, trials, leaves, 0, 2000e18); // root
+        _claimAndCheck(EPOCH, accounts, amounts, trials, leaves, 1, 1000e18); // connected wallet, first trial
+        assertEq(core.trialWalletOf(ROOT), CONNECTED);
+        _claimAndCheck(EPOCH, accounts, amounts, trials, leaves, 3, 500e18); // EIP-7702 account: plain transfer
 
         bytes32[] memory proof = MerkleHelper.proof(leaves, 2);
         vm.expectRevert(abi.encodeWithSelector(IdentityLib.NotVerifiedHuman.selector, EXPIRED_ROOT));
@@ -120,6 +136,105 @@ contract CeloMainnetForkTest is PermitSigner {
         assertGe(G.balanceOf(address(core)), core.accountedBalance());
     }
 
+    /// @notice On mainnet state: at the pinned Sunday only the week being closed (2966) and the previous one
+    ///         (2965) can be settled.
+    function testFork_settlementWindow() public onlyFork {
+        _fundRewardsPoolFromWhale(1000e18);
+        bytes32 leafRoot = EpochMerkle.leaf(EPOCH - 2, ROOT, 10e18, 0);
+        uint256 start = WeekMath.weekStart(EPOCH - 2);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVeriWorkCore.EpochNotSettleable.selector, EPOCH - 2, start + 5 days, start + 14 days
+            )
+        );
+        vm.prank(operator);
+        core.settleEpoch(EPOCH - 2, leafRoot, new bytes32[](0), 10e18);
+        vm.startPrank(operator);
+        core.settleEpoch(EPOCH - 1, EpochMerkle.leaf(EPOCH - 1, ROOT, 10e18, 0), new bytes32[](0), 10e18);
+        core.settleEpoch(EPOCH, EpochMerkle.leaf(EPOCH, ROOT, 10e18, 0), new bytes32[](0), 10e18);
+        vm.stopPrank();
+        assertEq(core.totalEpochLiability(), 20e18);
+    }
+
+    // ------------------------------------------------------------------ trial escrow across epochs
+
+    /// @notice On mainnet state: a connected wallet's two trial tasks settle in two epochs (2965 and 2966, both
+    ///         settleable on the pinned Sunday) and both are paid; the root's own trial part is then forfeited with
+    ///         an event, because the human's trial wallet is the connected one.
+    function testFork_trialAcrossTwoEpochs() public onlyFork {
+        _fundRewardsPoolFromWhale(1000e18);
+        uint256 previous = EPOCH - 1;
+        address[] memory accounts = new address[](2);
+        uint256[] memory amounts = new uint256[](2);
+        (accounts[0], accounts[1]) = (CONNECTED, ROOT);
+        (amounts[0], amounts[1]) = (120e18, 150e18);
+        bytes32[] memory leaves = _leaves(EPOCH, accounts, amounts, amounts); // all trial work
+        vm.startPrank(operator);
+        core.settleEpoch(previous, EpochMerkle.leaf(previous, CONNECTED, 100e18, 100e18), new bytes32[](0), 100e18);
+        core.settleEpoch(EPOCH, MerkleHelper.root(leaves), new bytes32[](0), 270e18);
+        vm.stopPrank();
+        vm.warp(block.timestamp + core.claimDelay());
+
+        uint256 before = G.balanceOf(CONNECTED);
+        vm.prank(CONNECTED);
+        core.claim(previous, 100e18, 100e18, new bytes32[](0));
+        _claimAndCheck(EPOCH, accounts, amounts, amounts, leaves, 0, 120e18);
+        assertEq(G.balanceOf(CONNECTED) - before, 220e18, "both trial tasks of the same wallet are paid");
+
+        bytes32[] memory proof = MerkleHelper.proof(leaves, 1);
+        vm.expectEmit(address(core));
+        emit TrialRewardForfeited(EPOCH, ROOT, ROOT, 150e18);
+        vm.prank(ROOT);
+        core.claim(EPOCH, 150e18, 150e18, proof);
+        assertEq(core.rewardsPool(), 1000e18 - 370e18 + 150e18, "the second wallet's trial part is forfeited");
+        assertEq(core.totalEpochLiability(), 0);
+        assertGe(G.balanceOf(address(core)), core.accountedBalance());
+    }
+
+    // ------------------------------------------------------------------ outflows on the real token
+
+    /// @notice On the real G$ every VeriWork transfer moves at par. Once the Avatar installs a sender-pays or a
+    ///         receiver-pays fee formula, payouts and deposits fail closed: nobody pays the fee, the DAO's fee
+    ///         recipient collects nothing and nothing leaks. With the original formula back, transfers are at par.
+    function testFork_transfersAtParOnRealGoodDollar() public onlyFork {
+        _fundRewardsPoolFromWhale(1000e18);
+        uint256 before = G.balanceOf(address(core));
+        vm.prank(admin);
+        core.withdrawRewardsPool(treasury, 100e18);
+        assertEq(before - G.balanceOf(address(core)), 100e18, "a plain G$ transfer costs exactly the amount");
+        assertEq(G.balanceOf(treasury), 100e18, "and delivers all of it");
+
+        ISuperGoodDollarFees fees = ISuperGoodDollarFees(address(G));
+        address original = fees.formula();
+        address feeRecipient = fees.feeRecipient();
+        uint256 feeRecipientBefore = G.balanceOf(feeRecipient);
+        address senderPays = address(new MockFeeFormula(100, true));
+        address receiverPays = address(new MockFeeFormula(100, false));
+        vm.startPrank(WHALE);
+        G.approve(address(core), type(uint256).max);
+        vm.stopPrank();
+
+        vm.prank(AVATAR); // G$ owner (DEFAULT_ADMIN_ROLE) at the pinned block
+        fees.setFormula(senderPays);
+        _expectPayoutAndDepositRevert(
+            abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 101e18, 100e18)
+        );
+        vm.prank(AVATAR);
+        fees.setFormula(receiverPays);
+        _expectPayoutAndDepositRevert(
+            abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 99e18, 100e18)
+        );
+        assertEq(G.balanceOf(feeRecipient), feeRecipientBefore, "the G$ fee recipient collected nothing");
+        assertEq(G.balanceOf(address(core)), core.accountedBalance(), "nothing leaked");
+        assertEq(core.rewardsPool(), 900e18);
+
+        vm.prank(AVATAR);
+        fees.setFormula(original);
+        vm.prank(admin);
+        core.withdrawRewardsPool(treasury, 100e18);
+        assertEq(G.balanceOf(treasury), 200e18, "at par again once the fee is gone");
+    }
+
     // ------------------------------------------------------------------ permit stake
 
     function testFork_permitStakeWithFreshKey() public onlyFork {
@@ -127,7 +242,7 @@ contract CeloMainnetForkTest is PermitSigner {
         (address user, uint256 key) = _freshVerifiedWallet("fork-staker");
         PermitSig memory sig = _signPermit(address(G), key, address(core), 150e18, block.timestamp + 1 hours);
         vm.prank(user);
-        core.depositStakeWithPermit(sig.deadline, sig.v, sig.r, sig.s);
+        core.depositStakeWithPermit(150e18, sig.deadline, sig.v, sig.r, sig.s);
         IVeriWorkCore.Stake memory s = core.stake(EPOCH + 1, user);
         assertEq(s.account, user);
         assertEq(s.amount, 150e18);
@@ -138,7 +253,7 @@ contract CeloMainnetForkTest is PermitSigner {
         sig = _signPermit(address(G), key2, address(core), 150e18, block.timestamp + 1 hours);
         IERC20Permit(address(G)).permit(user2, address(core), 150e18, sig.deadline, sig.v, sig.r, sig.s); // front-run
         vm.prank(user2);
-        core.depositStakeWithPermit(sig.deadline, sig.v, sig.r, sig.s);
+        core.depositStakeWithPermit(150e18, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(core.totalStaked(), 300e18);
 
         vm.warp(WeekMath.weekStart(EPOCH + 1) + WeekMath.STAKE_UNLOCK);
@@ -157,19 +272,16 @@ contract CeloMainnetForkTest is PermitSigner {
         G.approve(address(core), type(uint256).max);
         G.approve(address(registry), type(uint256).max);
         vm.expectRevert(abi.encodeWithSelector(IdentityLib.NotVerifiedHuman.selector, EXPIRED_ROOT));
-        core.depositStake();
+        core.depositStake(150e18);
         vm.expectRevert(abi.encodeWithSelector(IdentityLib.NotVerifiedHuman.selector, EXPIRED_ROOT));
-        registry.registerAgent(makeAddr("agent"), keccak256("card"));
+        registry.registerAgent(makeAddr("agent"), CARD, 250e18, block.timestamp, "");
         vm.stopPrank();
     }
 
     // ------------------------------------------------------------------ blocked recipients
 
     function testFork_blockedRecipientBehaviour() public onlyFork {
-        vm.prank(WHALE);
-        G.approve(address(core), type(uint256).max);
-        vm.prank(WHALE);
-        core.fundRewardsPool(1000e18);
+        _fundRewardsPoolFromWhale(1000e18);
 
         vm.expectRevert(IGoodDollar.SUPER_GOODDOLLAR_BLOCKED.selector);
         vm.prank(admin);
@@ -182,7 +294,7 @@ contract CeloMainnetForkTest is PermitSigner {
         G.transfer(ROOT, 500e18);
         vm.startPrank(ROOT);
         G.approve(address(core), type(uint256).max);
-        core.purchaseModule(1);
+        core.purchaseModule(1, 100e18);
         vm.stopPrank();
 
         vm.prank(admin);
@@ -201,13 +313,23 @@ contract CeloMainnetForkTest is PermitSigner {
 
     // ------------------------------------------------------------------ agent registry
 
-    function testFork_agentRegistry_activeUntilOwnerExpires() public onlyFork {
+    /// @notice On mainnet: a fresh agent key signs the EIP-712 consent (domain bound to chain 42220 and this
+    ///         registry) and a real verified human registers it; the agent stays active until the owner's GoodID
+    ///         really expires.
+    function testFork_agentRegistry_consentWithFreshKeyAndOwnerExpiry() public onlyFork {
+        (address agentAddress, uint256 agentKey) = makeAddrAndKey("ai-contributor");
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes32 digest = AgentConsent.digest(address(registry), 42_220, ROOT_B, CARD, deadline);
+        assertEq(registry.consentDigest(ROOT_B, CARD, deadline), digest, "domain uses chain 42220");
+        bytes memory consent = _sign(agentKey, digest);
+
         vm.prank(WHALE);
         G.transfer(ROOT_B, 1000e18);
-        address agentAddress = makeAddr("ai-contributor");
         vm.startPrank(ROOT_B);
         G.approve(address(registry), type(uint256).max);
-        registry.registerAgent(agentAddress, keccak256("agent-card"));
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.InvalidConsent.selector, makeAddr("someone-else")));
+        registry.registerAgent(makeAddr("someone-else"), CARD, 250e18, deadline, consent);
+        registry.registerAgent(agentAddress, CARD, 250e18, deadline, consent);
         vm.stopPrank();
         assertTrue(registry.isActiveAgent(agentAddress));
         assertEq(G.balanceOf(address(registry)), 250e18);
@@ -226,12 +348,14 @@ contract CeloMainnetForkTest is PermitSigner {
     }
 
     function testFork_agentSlashGoesToUbiScheme() public onlyFork {
+        (address agentAddress, uint256 agentKey) = makeAddrAndKey("agent");
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory consent = _sign(agentKey, AgentConsent.digest(address(registry), 42_220, ROOT, CARD, deadline));
         vm.prank(WHALE);
         G.transfer(ROOT, 1000e18);
-        address agentAddress = makeAddr("agent");
         vm.startPrank(ROOT);
         G.approve(address(registry), type(uint256).max);
-        registry.registerAgent(agentAddress, keccak256("card"));
+        registry.registerAgent(agentAddress, CARD, 250e18, deadline, consent);
         vm.stopPrank();
         uint256 ubiBefore = G.balanceOf(UBI_SCHEME);
         vm.prank(admin);
@@ -248,9 +372,27 @@ contract CeloMainnetForkTest is PermitSigner {
         core.grantRole(sponsorRole, WHALE);
         vm.startPrank(WHALE);
         G.approve(address(core), amount);
-        core.fundCampaign(CAMPAIGN, amount);
+        core.fundCampaign(CAMPAIGN, amount, 1000);
         vm.stopPrank();
         assertEq(core.campaign(CAMPAIGN).available, amount, "no transfer fee at the pinned block");
+    }
+
+    /// @dev A 100 G$ payout (rewards-pool withdrawal) and a 100 G$ deposit (rewards-pool funding) both revert with
+    ///      `reason`.
+    function _expectPayoutAndDepositRevert(bytes memory reason) internal {
+        vm.expectRevert(reason);
+        vm.prank(admin);
+        core.withdrawRewardsPool(treasury, 100e18);
+        vm.expectRevert(reason);
+        vm.prank(WHALE);
+        core.fundRewardsPool(100e18);
+    }
+
+    function _fundRewardsPoolFromWhale(uint256 amount) internal {
+        vm.startPrank(WHALE);
+        G.approve(address(core), amount);
+        core.fundRewardsPool(amount);
+        vm.stopPrank();
     }
 
     function _freshVerifiedWallet(string memory label) internal returns (address user, uint256 key) {
@@ -263,6 +405,7 @@ contract CeloMainnetForkTest is PermitSigner {
     }
 
     function _claimAndCheck(
+        uint256 epochId,
         address[] memory accounts,
         uint256[] memory amounts,
         uint256[] memory trials,
@@ -273,19 +416,24 @@ contract CeloMainnetForkTest is PermitSigner {
         bytes32[] memory proof = MerkleHelper.proof(leaves, index);
         uint256 before = G.balanceOf(accounts[index]);
         vm.prank(accounts[index]);
-        core.claim(EPOCH, amounts[index], trials[index], proof);
+        core.claim(epochId, amounts[index], trials[index], proof);
         assertEq(G.balanceOf(accounts[index]) - before, expectedPayout);
     }
 
-    function _leaves(address[] memory accounts, uint256[] memory amounts, uint256[] memory trials)
+    function _leaves(uint256 epochId, address[] memory accounts, uint256[] memory amounts, uint256[] memory trials)
         internal
         pure
         returns (bytes32[] memory leaves)
     {
         leaves = new bytes32[](accounts.length);
         for (uint256 i; i < accounts.length; ++i) {
-            leaves[i] = EpochMerkle.leaf(EPOCH, accounts[i], amounts[i], trials[i]);
+            leaves[i] = EpochMerkle.leaf(epochId, accounts[i], amounts[i], trials[i]);
         }
+    }
+
+    function _sign(uint256 key, bytes32 digest) internal pure returns (bytes memory) {
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     function _one(bytes32 id) internal pure returns (bytes32[] memory ids) {

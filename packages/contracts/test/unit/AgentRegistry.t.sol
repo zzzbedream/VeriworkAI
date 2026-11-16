@@ -1,70 +1,19 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.38;
 
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
-import {IIdentity} from "../../src/interfaces/IIdentity.sol";
 import {IdentityLib} from "../../src/libraries/IdentityLib.sol";
 import {TokenTransfers} from "../../src/libraries/TokenTransfers.sol";
 import {GuardianPausable} from "../../src/security/GuardianPausable.sol";
 import {RollingWindowBreaker} from "../../src/security/RollingWindowBreaker.sol";
 import {AgentRegistry} from "../../src/AgentRegistry.sol";
-import {MockGoodDollar} from "../mocks/MockGoodDollar.sol";
 import {MockIdentity} from "../mocks/MockIdentity.sol";
-import {PermitSigner} from "../utils/PermitSigner.sol";
+import {RegistryFixture} from "../utils/RegistryFixture.sol";
 
-contract AgentRegistryTest is PermitSigner {
-    uint256 internal constant BOND = 250e18;
-    uint256 internal constant CAP = 100_000e18;
-    uint256 internal constant T0 = 1_794_830_400;
-    bytes32 internal constant META = keccak256("agent-card");
-    bytes32 internal constant REASON = keccak256("qa-failure");
-
-    event AgentRegistered(
-        address indexed agent, address indexed owner, address indexed root, uint256 bond, bytes32 metadataHash
-    );
-    event AgentStatusChanged(address indexed agent, AgentRegistry.AgentStatus from, AgentRegistry.AgentStatus to);
-    event AgentUnbondRequested(address indexed agent, uint64 unbondAt);
-    event AgentBondWithdrawn(address indexed agent, address indexed owner, uint256 amount);
-    event AgentSlashed(address indexed agent, uint256 amount, bytes32 reasonHash);
-    event AgentSuspended(address indexed agent, bytes32 reasonHash);
-    event ParameterUpdated(bytes32 indexed name, uint256 oldValue, uint256 newValue);
-    event RecipientUpdated(bytes32 indexed name, address oldRecipient, address newRecipient);
-
-    MockGoodDollar internal token;
-    MockIdentity internal identity;
-    AgentRegistry internal registry;
-
-    address internal admin = makeAddr("admin");
-    address internal guardian = makeAddr("guardian");
-    address internal operator = makeAddr("operator");
-    address internal ubi = makeAddr("ubiScheme");
-    address internal root = makeAddr("root");
-    address internal connected = makeAddr("connected");
-    address internal root2 = makeAddr("root2");
-    address internal stranger = makeAddr("stranger");
-    address internal agentA = makeAddr("agentA");
-    address internal agentB = makeAddr("agentB");
-    address internal agentC = makeAddr("agentC");
-    address internal agentD = makeAddr("agentD");
-
-    function setUp() public {
-        vm.warp(T0);
-        token = new MockGoodDollar();
-        identity = new MockIdentity();
-        registry = _deploy(address(token), address(identity), admin, guardian, operator, ubi, BOND);
-        identity.setVerified(root);
-        identity.connect(connected, root);
-        identity.setVerified(root2);
-        address[4] memory holders = [root, connected, root2, stranger];
-        for (uint256 i; i < holders.length; ++i) {
-            token.mint(holders[i], 10_000e18);
-            vm.prank(holders[i]);
-            token.approve(address(registry), type(uint256).max);
-        }
-    }
-
+/// @notice Registration, the per-human cap, unbonding, suspension, slashing, `isActiveAgent`, surplus and pause
+///         coverage. Consent signatures, caller caps and the status guards are in `AgentRegistryGuards.t.sol`.
+contract AgentRegistryTest is RegistryFixture {
     // ------------------------------------------------------------------ constructor / setters
 
     function test_constructor() public view {
@@ -112,6 +61,8 @@ contract AgentRegistryTest is PermitSigner {
         registry.setUbiRecipient(newUbi);
         vm.expectRevert(GuardianPausable.ZeroAddress.selector);
         registry.setUbiRecipient(address(0));
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.InvalidRecipient.selector, address(registry)));
+        registry.setUbiRecipient(address(registry)); // every slash would revert
         vm.stopPrank();
         assertEq(registry.bondAmount(), 100_000e18);
         assertEq(registry.maxRollingOutflow(), 1e18);
@@ -131,6 +82,8 @@ contract AgentRegistryTest is PermitSigner {
         registry.reinstateAgent(agentA);
         vm.expectRevert(_unauthorized(operator, role));
         registry.slashAgent(agentA, 1, REASON);
+        vm.expectRevert(_unauthorized(operator, role));
+        registry.sweepSurplus(operator, 1);
         vm.stopPrank();
         vm.expectRevert(_unauthorized(admin, registry.OPERATOR_ROLE()));
         vm.prank(admin);
@@ -170,8 +123,11 @@ contract AgentRegistryTest is PermitSigner {
         _register(root, agentA);
         vm.expectRevert(abi.encodeWithSelector(AgentRegistry.AgentAlreadyRegistered.selector, agentA));
         _register(root2, agentA);
-        token.setFee(100, makeAddr("feeSink"));
-        vm.expectRevert(TokenTransfers.FeeOnTransferNotSupported.selector);
+        token.setFee(100, makeAddr("feeSink")); // a G$ fee never takes part of a bond
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 247.5e18, BOND));
+        _register(root2, agentB);
+        token.setSenderPaysFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 252.5e18, BOND));
         _register(root2, agentB);
     }
 
@@ -186,12 +142,12 @@ contract AgentRegistryTest is PermitSigner {
         vm.prank(root);
         registry.requestUnbond(agentA);
         vm.expectRevert(abi.encodeWithSelector(AgentRegistry.AgentCapReached.selector, root));
-        _register(root, makeAddr("agentE")); // unbonding agents still count
+        _register(root, agentE); // unbonding agents still count
         vm.warp(block.timestamp + 7 days);
         vm.prank(root);
         registry.withdrawBond(agentA);
         assertEq(registry.agentsOfRoot(root), 2);
-        _register(root, makeAddr("agentE"));
+        _register(root, agentE);
         vm.expectRevert(abi.encodeWithSelector(AgentRegistry.AgentAlreadyRegistered.selector, agentA));
         _register(root, agentA); // a withdrawn agent address can never be reused
     }
@@ -200,20 +156,24 @@ contract AgentRegistryTest is PermitSigner {
         (address user, uint256 key) = makeAddrAndKey("fresh");
         identity.setVerified(user);
         token.mint(user, 1000e18);
+        uint256 deadline = block.timestamp + 1 hours;
+        bytes memory consentA = _consent(agentA, user, META, deadline);
         PermitSig memory sig = _signPermit(address(token), key, address(registry), BOND, block.timestamp + 1);
         vm.prank(user);
-        registry.registerAgentWithPermit(agentA, META, sig.deadline, sig.v, sig.r, sig.s);
+        registry.registerAgentWithPermit(agentA, META, deadline, consentA, BOND, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(registry.agent(agentA).owner, user);
 
+        bytes memory consentB = _consent(agentB, user, META, deadline);
         sig = _signPermit(address(token), key, address(registry), BOND, block.timestamp + 1);
-        token.permit(user, address(registry), BOND, sig.deadline, sig.v, sig.r, sig.s);
+        token.permit(user, address(registry), BOND, sig.deadline, sig.v, sig.r, sig.s); // front-run
         vm.prank(user);
-        registry.registerAgentWithPermit(agentB, META, sig.deadline, sig.v, sig.r, sig.s);
+        registry.registerAgentWithPermit(agentB, META, deadline, consentB, BOND, sig.deadline, sig.v, sig.r, sig.s);
         assertEq(registry.agentsOfRoot(user), 2);
 
+        bytes memory consentC = _consent(agentC, user, META, deadline);
         vm.expectRevert(abi.encodeWithSelector(TokenTransfers.PermitFailed.selector, 0, BOND));
         vm.prank(user);
-        registry.registerAgentWithPermit(agentC, META, block.timestamp, 27, bytes32(0), bytes32(0));
+        registry.registerAgentWithPermit(agentC, META, deadline, consentC, BOND, block.timestamp, 27, 0, 0);
     }
 
     // ------------------------------------------------------------------ unbonding
@@ -243,7 +203,7 @@ contract AgentRegistryTest is PermitSigner {
         vm.prank(root);
         registry.withdrawBond(agentA);
         assertEq(token.balanceOf(root) - before, BOND);
-        assertEq(uint8(registry.agent(agentA).status), uint8(AgentRegistry.AgentStatus.Withdrawn));
+        assertEq(uint8(_status(agentA)), uint8(AgentRegistry.AgentStatus.Withdrawn));
         assertEq(registry.totalBonded(), 0);
         assertEq(registry.agentsOfRoot(root), 0);
     }
@@ -257,16 +217,10 @@ contract AgentRegistryTest is PermitSigner {
         vm.prank(connected);
         registry.withdrawBond(agentA);
         vm.startPrank(root);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentRegistry.InvalidAgentStatus.selector, agentA, AgentRegistry.AgentStatus.Active)
-        );
+        vm.expectRevert(_badStatus(agentA, AgentRegistry.AgentStatus.Active));
         registry.withdrawBond(agentA);
         registry.requestUnbond(agentA);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                AgentRegistry.InvalidAgentStatus.selector, agentA, AgentRegistry.AgentStatus.Unbonding
-            )
-        );
+        vm.expectRevert(_badStatus(agentA, AgentRegistry.AgentStatus.Unbonding));
         registry.requestUnbond(agentA);
         vm.stopPrank();
     }
@@ -291,6 +245,39 @@ contract AgentRegistryTest is PermitSigner {
         registry.withdrawBond(agentA);
     }
 
+    /// @notice Regression: a sender-pays G$ fee would make a bond refund cost `bond + fee`, leaving the last
+    ///         owner unable to exit, and a receiver-pays fee would take part of the refund or of the slash sent to
+    ///         UBI; every payout fails closed instead.
+    function test_withdrawBond_failsClosedUnderAnyTransferFee() public {
+        _register(root, agentA);
+        _register(root2, agentB);
+        vm.prank(root);
+        registry.requestUnbond(agentA);
+        vm.warp(block.timestamp + 7 days);
+        token.setSenderPaysFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 252.5e18, BOND));
+        vm.prank(root);
+        registry.withdrawBond(agentA);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.SenderFeeNotSupported.selector, 101e18, 100e18));
+        vm.prank(admin);
+        registry.slashAgent(agentB, 100e18, REASON);
+        token.setFee(100, makeAddr("feeSink"));
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 247.5e18, BOND));
+        vm.prank(root);
+        registry.withdrawBond(agentA);
+        vm.expectRevert(abi.encodeWithSelector(TokenTransfers.ReceiverFeeNotSupported.selector, 99e18, 100e18));
+        vm.prank(admin);
+        registry.slashAgent(agentB, 100e18, REASON);
+        assertEq(token.balanceOf(address(registry)), registry.totalBonded(), "solvency holds");
+        token.setFee(0, address(0));
+        vm.prank(admin);
+        registry.slashAgent(agentB, 100e18, REASON);
+        assertEq(token.balanceOf(ubi), 100e18, "UBI gets the whole slash");
+        vm.prank(root);
+        registry.withdrawBond(agentA);
+        assertEq(token.balanceOf(root), 10_000e18, "the whole bond came back");
+    }
+
     // ------------------------------------------------------------------ suspend / reinstate / slash
 
     function test_suspendAndReinstate() public {
@@ -303,11 +290,7 @@ contract AgentRegistryTest is PermitSigner {
         registry.suspendAgent(agentA, REASON);
         assertFalse(registry.isActiveAgent(agentA));
         assertEq(registry.activeAgentCount(), 0);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                AgentRegistry.InvalidAgentStatus.selector, agentA, AgentRegistry.AgentStatus.Suspended
-            )
-        );
+        vm.expectRevert(_badStatus(agentA, AgentRegistry.AgentStatus.Suspended));
         vm.prank(operator);
         registry.suspendAgent(agentA, REASON);
 
@@ -315,9 +298,7 @@ contract AgentRegistryTest is PermitSigner {
         registry.reinstateAgent(agentA);
         assertTrue(registry.isActiveAgent(agentA));
         assertEq(registry.activeAgentCount(), 1);
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentRegistry.InvalidAgentStatus.selector, agentA, AgentRegistry.AgentStatus.Active)
-        );
+        vm.expectRevert(_badStatus(agentA, AgentRegistry.AgentStatus.Active));
         vm.prank(admin);
         registry.reinstateAgent(agentA);
     }
@@ -358,28 +339,54 @@ contract AgentRegistryTest is PermitSigner {
         assertTrue(registry.isActiveAgent(agentA), "partially slashed agent is still active");
         registry.slashAgent(agentA, BOND - 60e18, REASON); // full slash
         assertFalse(registry.isActiveAgent(agentA), "an unbonded agent is not active");
-        vm.expectRevert(
-            abi.encodeWithSelector(AgentRegistry.InvalidAgentStatus.selector, agentB, AgentRegistry.AgentStatus.None)
-        );
+        vm.expectRevert(_badStatus(agentB, AgentRegistry.AgentStatus.None));
         registry.slashAgent(agentB, 1, REASON);
         vm.stopPrank();
         assertEq(token.balanceOf(ubi), BOND);
     }
 
-    function test_slashAgent_rejectsWithdrawn() public {
+    /// @notice Regression: a slash that empties the bond suspends an active agent, so `activeAgentCount` (and
+    ///         the indexed metric built on `AgentStatusChanged`) never counts a zero-bond agent, and it cannot be
+    ///         reinstated.
+    function test_slashAgent_fullSlashSuspendsActiveAgent() public {
         _register(root, agentA);
-        vm.prank(root);
-        registry.requestUnbond(agentA);
-        vm.warp(block.timestamp + 7 days);
-        vm.prank(root);
-        registry.withdrawBond(agentA);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                AgentRegistry.InvalidAgentStatus.selector, agentA, AgentRegistry.AgentStatus.Withdrawn
-            )
-        );
+        _register(root, agentB);
+        vm.expectEmit(address(registry));
+        emit AgentSlashed(agentA, BOND, REASON);
+        vm.expectEmit(address(registry));
+        emit AgentStatusChanged(agentA, AgentRegistry.AgentStatus.Active, AgentRegistry.AgentStatus.Suspended);
+        vm.expectEmit(address(registry));
+        emit AgentSuspended(agentA, REASON);
         vm.prank(admin);
-        registry.slashAgent(agentA, 1, REASON);
+        registry.slashAgent(agentA, BOND, REASON);
+        assertEq(uint8(_status(agentA)), uint8(AgentRegistry.AgentStatus.Suspended));
+        assertEq(registry.activeAgentCount(), 1, "only agentB is active");
+        assertEq(registry.agentsOfRoot(root), 2, "the slot stays taken until the owner exits");
+
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.AgentHasNoBond.selector, agentA));
+        vm.prank(admin);
+        registry.reinstateAgent(agentA);
+
+        _unbondAndWithdraw(root, agentA); // the owner frees the slot; nothing is paid
+        assertEq(registry.agentsOfRoot(root), 1);
+        assertEq(uint8(_status(agentA)), uint8(AgentRegistry.AgentStatus.Withdrawn));
+    }
+
+    function test_slashAgent_fullSlashKeepsSuspendedAndUnbondingStatus() public {
+        _register(root, agentA);
+        _register(root, agentB);
+        vm.prank(operator);
+        registry.suspendAgent(agentA, REASON);
+        vm.prank(root);
+        registry.requestUnbond(agentB);
+        vm.startPrank(admin);
+        registry.slashAgent(agentA, BOND, REASON);
+        registry.slashAgent(agentB, BOND, REASON);
+        vm.stopPrank();
+        assertEq(uint8(_status(agentA)), uint8(AgentRegistry.AgentStatus.Suspended));
+        assertEq(uint8(_status(agentB)), uint8(AgentRegistry.AgentStatus.Unbonding));
+        assertEq(registry.activeAgentCount(), 0);
+        assertEq(registry.totalBonded(), 0);
     }
 
     // ------------------------------------------------------------------ isActiveAgent and identity
@@ -399,6 +406,65 @@ contract AgentRegistryTest is PermitSigner {
         assertFalse(registry.isActiveAgent(stranger));
     }
 
+    // ------------------------------------------------------------------ surplus
+
+    /// @notice Regression: G$ sent straight to the registry is no longer locked forever.
+    function test_sweepSurplus_recoversStrayTokens() public {
+        _register(root, agentA);
+        _unbondAndWithdraw(root, agentA);
+        assertEq(registry.totalBonded(), 0);
+        vm.prank(stranger);
+        token.transfer(address(registry), 100e18); // a mistaken "bond" by transfer, or a stream
+        assertEq(registry.surplus(), 100e18);
+        address to = makeAddr("refund");
+        vm.startPrank(admin);
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.InsufficientSurplus.selector, 100e18, 100e18 + 1));
+        registry.sweepSurplus(to, 100e18 + 1);
+        vm.expectRevert(AgentRegistry.ZeroAmount.selector);
+        registry.sweepSurplus(to, 0);
+        vm.expectRevert(GuardianPausable.ZeroAddress.selector);
+        registry.sweepSurplus(address(0), 1);
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.InvalidRecipient.selector, address(registry)));
+        registry.sweepSurplus(address(registry), 1);
+        vm.expectEmit(address(registry));
+        emit SurplusSwept(to, 60e18);
+        registry.sweepSurplus(to, 60e18);
+        registry.sweepSurplus(to, 40e18);
+        vm.stopPrank();
+        assertEq(token.balanceOf(to), 100e18);
+        assertEq(registry.surplus(), 0);
+        assertEq(registry.rollingOutflow(), BOND + 100e18, "sweeps pass the breaker");
+    }
+
+    function test_sweepSurplus_neverTouchesBonds() public {
+        _register(root, agentA);
+        vm.prank(stranger);
+        token.transfer(address(registry), 10e18);
+        vm.expectRevert(abi.encodeWithSelector(AgentRegistry.InsufficientSurplus.selector, 10e18, BOND));
+        vm.prank(admin);
+        registry.sweepSurplus(admin, BOND);
+        token.adminBurn(address(registry), 20e18); // the G$ DAO burns below the bonded total
+        assertEq(registry.surplus(), 0);
+        vm.prank(admin);
+        registry.setMaxRollingOutflow(1);
+        vm.prank(stranger);
+        token.transfer(address(registry), 20e18 + 5);
+        vm.expectRevert(abi.encodeWithSelector(RollingWindowBreaker.RollingOutflowLimitExceeded.selector, 5, 1));
+        vm.prank(admin);
+        registry.sweepSurplus(admin, 5);
+    }
+
+    function test_surplus_viewBlockedDuringReentrancy() public {
+        _register(root, agentA);
+        vm.prank(root);
+        registry.requestUnbond(agentA);
+        vm.warp(block.timestamp + 7 days);
+        token.setHook(address(registry), abi.encodeCall(registry.surplus, ()));
+        vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
+        vm.prank(root);
+        registry.withdrawBond(agentA);
+    }
+
     // ------------------------------------------------------------------ pause
 
     function test_pause_coverage() public {
@@ -408,9 +474,9 @@ contract AgentRegistryTest is PermitSigner {
         bytes memory paused = abi.encodeWithSelector(Pausable.EnforcedPause.selector);
         vm.startPrank(root);
         vm.expectRevert(paused);
-        registry.registerAgent(agentB, META);
+        registry.registerAgent(agentB, META, BOND, block.timestamp, "");
         vm.expectRevert(paused);
-        registry.registerAgentWithPermit(agentB, META, 0, 0, 0, 0);
+        registry.registerAgentWithPermit(agentB, META, block.timestamp, "", BOND, 0, 0, 0, 0);
         vm.expectRevert(paused);
         registry.requestUnbond(agentA);
         vm.expectRevert(paused);
@@ -423,6 +489,8 @@ contract AgentRegistryTest is PermitSigner {
         registry.reinstateAgent(agentA);
         vm.expectRevert(paused);
         registry.slashAgent(agentA, 1, REASON);
+        vm.expectRevert(paused);
+        registry.sweepSurplus(admin, 1);
         registry.setBondAmount(300e18);
         vm.stopPrank();
         vm.expectRevert(_unauthorized(guardian, registry.DEFAULT_ADMIN_ROLE()));
@@ -431,32 +499,5 @@ contract AgentRegistryTest is PermitSigner {
         vm.prank(admin);
         registry.unpause();
         assertFalse(registry.paused());
-    }
-
-    // ------------------------------------------------------------------ helpers
-
-    function _register(address owner, address agentAddress) internal {
-        vm.prank(owner);
-        registry.registerAgent(agentAddress, META);
-    }
-
-    function _deploy(
-        address t,
-        address id,
-        address admin_,
-        address guardian_,
-        address operator_,
-        address ubi_,
-        uint256 bond
-    ) internal returns (AgentRegistry) {
-        return new AgentRegistry(IERC20(t), IIdentity(id), admin_, guardian_, operator_, ubi_, bond, CAP);
-    }
-
-    function _outOfBounds(string memory name, uint256 value) internal pure returns (bytes memory) {
-        return abi.encodeWithSelector(RollingWindowBreaker.ParameterOutOfBounds.selector, bytes32(bytes(name)), value);
-    }
-
-    function _unauthorized(address account, bytes32 role) internal pure returns (bytes memory) {
-        return abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", account, role);
     }
 }
