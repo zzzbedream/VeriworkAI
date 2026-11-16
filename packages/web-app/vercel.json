@@ -2,5 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "installCommand": "npx -y pnpm@11.28.12 install --frozen-lockfile",
-  "buildCommand": "npx -y pnpm@11.28.12 -C ../.. turbo run build --filter=@veriwork/web-app"
+  "buildCommand": "npx -y pnpm@11.28.12 --filter @veriwork/database run db:generate && npx -y pnpm@11.28.12 --filter @veriwork/web-app run build"
 }
