@@ -10,7 +10,8 @@
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --coverage --passWithNoTests",
-    "test:e2e": "playwright test --pass-with-no-tests"
+    "test:e2e": "playwright test --pass-with-no-tests",
+    "build:static": "node scripts/build-static.mjs"
   },
   "dependencies": {
     "@goodsdks/citizen-sdk": "1.2.8",

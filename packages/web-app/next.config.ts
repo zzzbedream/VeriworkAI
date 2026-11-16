@@ -14,13 +14,21 @@ const baseHeaders = [
     : []),
 ];
 
+// NEXT_STATIC_EXPORT=1 builds the public landing as plain static files (scripts/build-static.mjs).
+// Static hosting cannot run headers(), so the same headers are written to out/vercel.json instead.
+const isStaticExport = process.env.NEXT_STATIC_EXPORT === '1';
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   transpilePackages: ['@veriwork/shared', '@veriwork/database'],
-  async headers() {
-    return [{ source: '/:path*', headers: baseHeaders }];
-  },
+  ...(isStaticExport
+    ? { output: 'export' as const, images: { unoptimized: true } }
+    : {
+        async headers() {
+          return [{ source: '/:path*', headers: baseHeaders }];
+        },
+      }),
 };
 
 export default nextConfig;
