@@ -89,6 +89,12 @@ export interface WorkerConfig {
   readonly receiptTimeoutMs: number;
   /** Nonce re-reads before a pending transaction is trusted (tests shorten it; default in TxSender). */
   readonly idleRecheck?: { readonly attempts: number; readonly delayMs: number };
+  /** Block-number reads after a receipt (tests shorten it; default in TxSender). */
+  readonly readSettle?: {
+    readonly observations: number;
+    readonly delayMs: number;
+    readonly maxReads: number;
+  };
   /** Every secret value, for log scrubbing (never logged itself). */
   readonly secrets: readonly string[];
 }

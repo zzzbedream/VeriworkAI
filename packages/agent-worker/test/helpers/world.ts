@@ -140,6 +140,7 @@ export class World {
       ...loaded,
       receiptTimeoutMs: 3_000,
       idleRecheck: { attempts: 3, delayMs: 0 },
+      readSettle: { observations: 2, delayMs: 0, maxReads: 6 },
       ...options.config,
     };
   }

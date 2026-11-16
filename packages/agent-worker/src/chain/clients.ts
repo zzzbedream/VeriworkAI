@@ -108,6 +108,7 @@ function sendingSigner(
     dryRun: config.dryRun,
     receiptTimeoutMs: config.receiptTimeoutMs,
     ...(config.idleRecheck === undefined ? {} : { idleRecheck: config.idleRecheck }),
+    ...(config.readSettle === undefined ? {} : { readSettle: config.readSettle }),
   });
   return { ...base, sender };
 }

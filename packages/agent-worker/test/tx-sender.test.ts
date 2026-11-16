@@ -97,6 +97,17 @@ describe('TxSender', () => {
     expect(world.chain.sentCalls()).toHaveLength(1);
   });
 
+  it('reads the block number again after a receipt so the next reads see the new state', async () => {
+    const { world, operator, grant } = setup();
+    await operator.sender.send(grant);
+    const afterReceipt = world.chain.methods.slice(
+      world.chain.methods.lastIndexOf('eth_getTransactionReceipt') + 1,
+    );
+    expect(afterReceipt.filter((method) => method === 'eth_blockNumber').length).toBeGreaterThanOrEqual(
+      2,
+    );
+  });
+
   it('reports a mined revert as TxRevertedError', async () => {
     const { world, operator, grant } = setup();
     const spy = vi.spyOn(world.core, 'write');

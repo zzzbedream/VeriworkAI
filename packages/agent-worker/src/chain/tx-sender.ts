@@ -63,7 +63,19 @@ export interface TxSenderOptions {
   readonly maxPriorityFeePerGas?: bigint;
   /** Nonce re-reads before reporting a pending transaction (default 5 reads, 2 s apart). */
   readonly idleRecheck?: IdleRecheck;
+  /** Block-number reads after a receipt before callers read state (default 3 in a row, 1 s apart). */
+  readonly readSettle?: ReadSettle;
 }
+
+export interface ReadSettle {
+  /** Consecutive `eth_blockNumber` answers at or past the receipt's block. */
+  readonly observations: number;
+  readonly delayMs: number;
+  /** Most reads before giving up (the caller's reads are then simply not guaranteed fresh). */
+  readonly maxReads: number;
+}
+
+const DEFAULT_READ_SETTLE: ReadSettle = { observations: 3, delayMs: 1_000, maxReads: 20 };
 
 export interface IdleRecheck {
   readonly attempts: number;
@@ -154,7 +166,23 @@ export class TxSender {
       { label, hash, block: receipt.blockNumber.toString(), gasUsed: receipt.gasUsed.toString() },
       'transaction confirmed',
     );
+    await this.settleReads(receipt.blockNumber);
     return receipt;
+  }
+
+  /**
+   * forno is load-balanced and its nodes can trail the one that returned the receipt, so a read right
+   * after it may still see the old state. Waits until several consecutive block-number reads (each
+   * possibly from another node) have reached the receipt's block.
+   */
+  private async settleReads(blockNumber: bigint): Promise<void> {
+    const { observations, delayMs, maxReads } = this.options.readSettle ?? DEFAULT_READ_SETTLE;
+    let streak = 0;
+    for (let read = 0; read < maxReads && streak < observations; read += 1) {
+      const head = await this.options.publicClient.getBlockNumber({ cacheTime: 0 });
+      streak = head >= blockNumber ? streak + 1 : 0;
+      if (streak < observations) await sleep(delayMs);
+    }
   }
 
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
