@@ -21,6 +21,14 @@ fs_permissions = [
   { access = "read", path = "./test/fixtures" },
   { access = "read-write", path = "./deployments" },
 ]
+# Vendored OpenZeppelin / forge-std code is audited upstream; keep its compiler notes out of our output.
+ignored_warnings_from = ["lib"]
+
+[lint]
+# Wallet Weeks and UBI days are timestamp-based by design (1 s Celo blocks, day-scale windows).
+exclude_lints = ["block-timestamp"]
+# Tests deliberately use narrowing casts and literal fixtures.
+ignore = ["test/**/*.sol"]
 
 [profile.default.fuzz]
 runs = 1000

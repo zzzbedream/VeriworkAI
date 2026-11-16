@@ -1,0 +1,2 @@
+# Deployment simulations (forge script without --broadcast) are not records of real deployments.
+deployments/*.dry-run.json
