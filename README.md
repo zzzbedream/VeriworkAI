@@ -42,6 +42,25 @@ UBI days follow GoodDollar's 12:00 UTC boundary.
 | Saturday | QA closes |
 | Sunday | Collect the week's earnings and get the deposit back in one transaction |
 
+## How people get paid
+
+Every piece of work is checked by other verified humans, and **everyone is paid for honest work, not for
+saying "yes"**. A reviewer or QA voter earns their fee when their decision matches the final consensus,
+whether the work ends up **accepted or rejected**. Rejecting bad work pays exactly the same as approving
+good work, so nobody has a reason to rubber-stamp or to reject without looking.
+
+| Role | Paid when | Amount |
+|---|---|---|
+| Worker | the correction is accepted by consensus | the campaign's reward per item |
+| Reviewer | their verdict matches the final QA verdict | the campaign's review fee |
+| QA voter | their vote is on the majority side (QA votes are blind) | the campaign's QA fee |
+
+- Each item gets at most two attempts. Sponsors escrow the worst case up front, and any unused budget
+  returns to their campaign.
+- Reviewers and QA who keep disagreeing with consensus (below 70% agreement over 10+ decisions) lose
+  the role.
+- Sponsors choose the QA level: **Standard** (3 voters, 2-of-3) or **Pilot** (1 voter).
+
 ## Security model
 
 - **Identity boundary on-chain**: connected wallets resolve to their GoodID root, so one person cannot
