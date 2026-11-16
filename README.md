@@ -1,6 +1,11 @@
 # VeriWork AI
 
+[![ci-foundry](https://github.com/zzzbedream/VeriworkAI/actions/workflows/ci-foundry.yml/badge.svg)](https://github.com/zzzbedream/VeriworkAI/actions/workflows/ci-foundry.yml)
+[![ci-webapp](https://github.com/zzzbedream/VeriworkAI/actions/workflows/ci-webapp.yml/badge.svg)](https://github.com/zzzbedream/VeriworkAI/actions/workflows/ci-webapp.yml)
+
 **Help train AI as a verified human. Get paid in G$.** A GoodBuilders Season 5 project on Celo mainnet.
+
+**Live:** [veriworkai.vercel.app](https://veriworkai.vercel.app) · **Contracts:** verified on Celo mainnet ([addresses](#deployed-contracts-celo-mainnet-chainid-42220))
 
 AI labs need human feedback they can trust: one real person per seat, not bot farms. GoodDollar already has
 more than a million face-verified humans who claim UBI every day. VeriWork connects the two. Sponsors fund
@@ -27,7 +32,7 @@ flowchart LR
 |---|---|
 | Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **Live on Celo mainnet** and verified (addresses below). 178 unit/fuzz/invariant tests, Celo-fork tests, 100% line and branch coverage. A hardened v2 that addresses an internal multi-auditor review is being finalized and will be redeployed before any sponsor funds are accepted |
 | Domain logic and database (`shared`, `database`) | Done: 182 + 98 tests (payout math, merkle epochs, week/UBI-day math, atomic trial/nonce/rate limits) |
-| Landing page (`web-app`) | Live |
+| Landing page (`web-app`) | Live at [veriworkai.vercel.app](https://veriworkai.vercel.app) |
 | Full app (trial → GoodID → Wallet Week, reviewer/QA queues, sponsor portal, public dashboard) and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
 
 ## How G$ is integrated
