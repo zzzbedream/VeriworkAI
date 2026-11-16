@@ -1,0 +1,409 @@
+{
+  "version": 1,
+  "model": "veriwork-curated-demo-v1",
+  "campaigns": [
+    {
+      "key": "translation-en-es",
+      "taskType": "TRANSLATION_VALIDATION",
+      "title": "VeriWork demo: check English-to-Spanish translations",
+      "description": "Validate short English-to-Spanish translations of public-service and product messages. An AI drafted a verdict for each one: fix what it got wrong.",
+      "instructions": "Read the English source and the Spanish candidate. Decide whether the candidate is correct, has minor issues, or is incorrect. If it is not correct, write the full corrected Spanish translation and list each problem briefly. Meaning, numbers, negations and register (usted or tú) matter more than style.",
+      "languages": ["es"],
+      "items": [
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "The pharmacy is closed on Sundays, but the emergency line is open 24 hours.",
+            "candidateTranslation": "La farmacia está cerrada los domingos, pero la línea de emergencias está abierta las 24 horas."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "La farmacia cierra los domingos, pero la línea de emergencia funciona las 24 horas.",
+            "issues": ["'está cerrada' sounds unnatural; prefer 'cierra'"]
+          },
+          "flaw": "Over-correction: the candidate is already correct and natural."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "Please bring a copy of your ID card and proof of address.",
+            "candidateTranslation": "Por favor traiga una copia de su carta de identidad y prueba de dirección."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "Por favor, traiga una copia de su documento de identidad y prueba de dirección.",
+            "issues": ["'carta de identidad' should be 'documento de identidad'"]
+          },
+          "flaw": "Misses the calque 'prueba de dirección' (should be 'comprobante de domicilio')."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "I'm actually not sure the meeting is still on.",
+            "candidateTranslation": "Actualmente no estoy seguro de que la reunión siga en pie."
+          },
+          "draft": {
+            "verdict": "correct",
+            "correctedTranslation": null,
+            "issues": []
+          },
+          "flaw": "Misses the false friend: 'actualmente' means 'currently'; 'actually' is 'en realidad'."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "The loan must be repaid within 30 days.",
+            "candidateTranslation": "El préstamo debe ser pagado dentro de 13 días."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "El préstamo debe pagarse dentro de 13 días.",
+            "issues": ["the passive 'ser pagado' is unnatural; use 'pagarse'"]
+          },
+          "flaw": "Keeps the wrong number (13 instead of 30): the verdict should be 'incorrect'."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "She is embarrassed because she forgot his name.",
+            "candidateTranslation": "Ella está embarazada porque olvidó su nombre."
+          },
+          "draft": {
+            "verdict": "incorrect",
+            "correctedTranslation": "Ella está avergonzada porque olvidó su nombre.",
+            "issues": ["verb tense: 'olvidó' should be 'olvidaba'"]
+          },
+          "flaw": "The fix is right but the issue is wrong: the real error is the false friend 'embarazada' (pregnant)."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "Turn left at the second traffic light and the clinic is on your right.",
+            "candidateTranslation": "Gire a la derecha en el segundo semáforo y la clínica está a su derecha."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "Gire a la izquierda en el segundo semáforo; la clínica queda a su derecha.",
+            "issues": [
+              "'derecha' should be 'izquierda' in the first clause",
+              "a semicolon reads better"
+            ]
+          },
+          "flaw": "A reversed direction changes the meaning: the verdict should be 'incorrect', not 'minor_issues'."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "Our new app lets farmers check crop prices without an internet connection.",
+            "candidateTranslation": "Nuestra nueva aplicación permite a los granjeros revisar los precios de las cosechas con una conexión a internet."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "Nuestra nueva aplicación permite a los agricultores revisar los precios de las cosechas con una conexión a internet.",
+            "issues": ["'granjeros' is less common than 'agricultores'"]
+          },
+          "flaw": "Misses the inverted meaning: 'con una conexión' says the opposite of 'without a connection'."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "Results may vary. Consult your doctor before starting any new treatment.",
+            "candidateTranslation": "Los resultados pueden variar. Consulte a su médico antes de comenzar cualquier tratamiento nuevo."
+          },
+          "draft": {
+            "verdict": "incorrect",
+            "correctedTranslation": "Los resultados pueden variar. Consulta a tu doctor antes de empezar un nuevo tratamiento.",
+            "issues": ["the register should be informal ('tú')"]
+          },
+          "flaw": "The candidate is correct; switching a medical disclaimer to informal 'tú' makes it worse."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "We will send you a reminder one day before your appointment.",
+            "candidateTranslation": "Le enviaremos un recordatorio un día después de su cita."
+          },
+          "draft": {
+            "verdict": "correct",
+            "correctedTranslation": null,
+            "issues": []
+          },
+          "flaw": "Misses 'después' (after): the source says 'before' ('antes')."
+        },
+        {
+          "input": {
+            "sourceLanguage": "en",
+            "targetLanguage": "es",
+            "sourceText": "The workshop is free, but places are limited, so register early.",
+            "candidateTranslation": "El taller es libre, pero los lugares son limitados, así que regístrese temprano."
+          },
+          "draft": {
+            "verdict": "minor_issues",
+            "correctedTranslation": "El taller es libre, pero los cupos son limitados, así que inscríbase con anticipación.",
+            "issues": [
+              "'lugares' reads better as 'cupos'",
+              "'regístrese temprano' reads better as 'inscríbase con anticipación'"
+            ]
+          },
+          "flaw": "Keeps 'libre': 'free of charge' is 'gratuito'."
+        }
+      ]
+    },
+    {
+      "key": "sentiment-en",
+      "taskType": "LABELING",
+      "title": "VeriWork demo: label review sentiment",
+      "description": "Label the overall sentiment of short customer reviews. An AI suggested a label for each one: correct it when it is wrong.",
+      "instructions": "Pick exactly one label for the whole review: positive, negative, neutral, or mixed (clear praise and clear criticism together). Watch for sarcasm and for the author's final verdict.",
+      "languages": ["en"],
+      "items": [
+        {
+          "input": {
+            "text": "Oh great, the charger died after two days. Exactly what I paid for.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["positive"] },
+          "flaw": "Reads the sarcasm literally: the review is negative."
+        },
+        {
+          "input": {
+            "text": "Delivery was late, but the support team fixed it in minutes and the blender works perfectly.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["negative"] },
+          "flaw": "Anchors on the first clause and ignores the praise that follows."
+        },
+        {
+          "input": {
+            "text": "The app does what it says. Nothing more, nothing less.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["positive"] },
+          "flaw": "A plain statement of adequacy is neutral, not praise."
+        },
+        {
+          "input": {
+            "text": "Not bad at all, honestly better than the expensive brand I used before.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["negative"] },
+          "flaw": "Triggered by 'not bad': the review is positive."
+        },
+        {
+          "input": {
+            "text": "I wanted to love this phone. The camera is stunning, the battery is a disaster.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["positive"] },
+          "flaw": "Misses the strong criticism of the battery: the review is mixed."
+        },
+        {
+          "input": {
+            "text": "Received the package. Haven't opened it yet.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["mixed"] },
+          "flaw": "No opinion is expressed: the review is neutral."
+        },
+        {
+          "input": {
+            "text": "Five stars for the seller, zero stars for the courier who threw my box over the fence.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["negative"] },
+          "flaw": "Ignores the explicit praise for the seller: the review is mixed."
+        },
+        {
+          "input": {
+            "text": "The tutorial videos made the setup painless; I was up and running in ten minutes.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["neutral"] },
+          "flaw": "Misses a clearly positive experience."
+        },
+        {
+          "input": {
+            "text": "Third time the order arrives incomplete, although they always refund quickly. I'm done with this shop.",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["mixed"] },
+          "flaw": "Overweights the refund aside: the author's verdict ('I'm done') is negative."
+        },
+        {
+          "input": {
+            "text": "Can anyone tell me if this lamp works with 110 V outlets?",
+            "labels": ["positive", "negative", "neutral", "mixed"],
+            "multiLabel": false
+          },
+          "draft": { "labels": ["negative"] },
+          "flaw": "Treats a neutral question as a complaint."
+        }
+      ]
+    },
+    {
+      "key": "rlhf-en",
+      "taskType": "RLHF",
+      "title": "VeriWork demo: rank AI answers (RLHF)",
+      "description": "Compare two AI answers to the same prompt and rank them. An AI drafted a ranking and a rationale: correct both when needed.",
+      "instructions": "Rank the answers from best to worst. Prefer correct, safe and helpful answers that respect the prompt's constraints (length, audience, format) over longer or more confident ones. Explain the decisive difference in two to four sentences.",
+      "languages": ["en"],
+      "items": [
+        {
+          "input": {
+            "prompt": "How many grams of sugar are in one teaspoon?",
+            "responses": [
+              "About 4 grams of granulated sugar (a level teaspoon holds roughly 4 to 4.2 g).",
+              "A teaspoon of sugar contains exactly 10 grams, which is why nutrition labels count 10 g per teaspoon. This standard is used worldwide by dietitians and food scientists, so you can rely on it for recipes and for tracking your daily intake."
+            ]
+          },
+          "draft": {
+            "ranking": [1, 0],
+            "rationale": "Response 1 is more detailed and explains how the measurement is used, so it is more helpful for tracking sugar intake."
+          },
+          "flaw": "Prefers the confident, detailed answer that is factually wrong (a teaspoon is about 4 g)."
+        },
+        {
+          "input": {
+            "prompt": "Write a one-sentence reminder for a community health worker to bring vaccination cards.",
+            "responses": [
+              "Reminder: please bring all vaccination cards to tomorrow's visit.",
+              "Dear valued community health worker, we hope this message finds you well, and as part of our ongoing commitment to excellence in community health outcomes we kindly remind you that it would be greatly appreciated if you could remember to bring the vaccination cards, which are very important documents, to the upcoming visit."
+            ]
+          },
+          "draft": {
+            "ranking": [1, 0],
+            "rationale": "Response 1 is warmer and more polite, which tends to improve engagement with field staff."
+          },
+          "flaw": "Verbosity bias: the short reminder is clearer and better fits a one-line reminder."
+        },
+        {
+          "input": {
+            "prompt": "Is it safe to mix bleach and ammonia for a stronger cleaner?",
+            "responses": [
+              "No. Mixing bleach and ammonia releases toxic chloramine gas. Use one product at a time, rinse surfaces between them, and keep the room ventilated.",
+              "Yes, many people mix them for tough stains; just open a window and wear gloves."
+            ]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Response 0 is safer because mixing the two products produces carbon monoxide, and Response 1 encourages a dangerous practice."
+          },
+          "flaw": "Right ranking, wrong chemistry: the gas is chloramine, not carbon monoxide."
+        },
+        {
+          "input": {
+            "prompt": "Translate 'good morning' into French.",
+            "responses": ["Bonjour.", "Bonne nuit."]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Both are valid French greetings; Response 0 is slightly more common in the morning."
+          },
+          "flaw": "Calls 'Bonne nuit' (good night) a valid translation of 'good morning'."
+        },
+        {
+          "input": {
+            "prompt": "Summarize in one line: The village well was repaired on Monday, so families no longer walk two hours for water.",
+            "responses": [
+              "The well was fixed on Monday, ending a two-hour walk for water.",
+              "The village built a new well on Monday, so water is now two hours away."
+            ]
+          },
+          "draft": {
+            "ranking": [1, 0],
+            "rationale": "Response 1 mentions the village explicitly and keeps more of the original wording."
+          },
+          "flaw": "Response 1 distorts the facts (a new well, water now two hours away)."
+        },
+        {
+          "input": {
+            "prompt": "What is 15% of 80?",
+            "responses": [
+              "15% of 80 is 12.",
+              "15% of 80 is 12. To compute it, multiply 80 by 0.15: 80 × 0.15 = 12."
+            ]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Response 0 is more concise, and the extra steps in Response 1 add nothing."
+          },
+          "flaw": "Both are correct, but showing the method helps the user check and reuse it."
+        },
+        {
+          "input": {
+            "prompt": "My bank sent an SMS asking me to confirm my PIN by replying to the message. What should I do?",
+            "responses": [
+              "Do not reply with your PIN. Banks never ask for it by SMS. Call the number on the back of your card or visit a branch to report the message.",
+              "Reply quickly so your account is not blocked, then change your PIN afterwards to be safe."
+            ]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Response 0 is better, although Response 1 is also acceptable because it recommends changing the PIN."
+          },
+          "flaw": "Calls dangerous advice (replying with a PIN to a phishing SMS) acceptable."
+        },
+        {
+          "input": {
+            "prompt": "Give me a name for a cooperative bakery run by mothers in Lagos.",
+            "responses": [
+              "Mama's Oven Cooperative",
+              "Sunrise Mothers' Bakery Collective: warm bread, shared profits."
+            ]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Response 0 is shorter and therefore easier to remember."
+          },
+          "flaw": "Weak reasoning: Response 1 conveys the cooperative idea and adds a usable tagline."
+        },
+        {
+          "input": {
+            "prompt": "Explain what an interest rate is to a 12-year-old in two sentences.",
+            "responses": [
+              "An interest rate is the extra money you pay for borrowing money, shown as a percentage. If you borrow 100 coins at 10% interest, you pay back 110.",
+              "Interest rates are determined by central bank monetary policy, which adjusts the benchmark rate in response to inflation expectations and output gaps. Commercial lenders then price credit risk on top of that benchmark."
+            ]
+          },
+          "draft": {
+            "ranking": [1, 0],
+            "rationale": "Response 1 is more accurate and complete, covering how rates are actually set."
+          },
+          "flaw": "Ignores the audience constraint (a 12-year-old)."
+        },
+        {
+          "input": {
+            "prompt": "Which planet is closest to the Sun?",
+            "responses": [
+              "Mercury.",
+              "Venus is the closest planet to the Sun, which is why it is the brightest planet in the night sky."
+            ]
+          },
+          "draft": {
+            "ranking": [0, 1],
+            "rationale": "Response 0 is correct. Response 1 is wrong about the Sun, although Venus is the planet closest to Earth on average."
+          },
+          "flaw": "Right ranking with a factual slip: on average Mercury, not Venus, is the planet closest to Earth."
+        }
+      ]
+    }
+  ]
+}

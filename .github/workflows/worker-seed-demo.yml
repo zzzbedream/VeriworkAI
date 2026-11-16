@@ -1,0 +1,72 @@
+name: worker-seed-demo
+
+# Runs `seed:demo` on demand: creates the grant-funded demo campaigns (Pilot QA, 100 / 20 / 10 G$,
+# 30 curated items), funds them from the operator key acting as sponsor, opens their batches,
+# attaches the signed AI drafts and publishes them for human review. Idempotent: a re-run continues
+# where the previous one stopped. The default is a dry run that only prints the exact plan.
+# Enable it with the repository variable SEED_DEMO_ENABLED=true. Secrets are exposed ONLY to the
+# final step, only runs from the default branch get them, and every action is pinned to a full SHA.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run: print the plan, send no transaction, write nothing'
+        type: boolean
+        default: true
+      review_weeks:
+        description: 'QA close of the demo batches: the Saturday 12:00 UTC this many weeks out (1-8)'
+        type: string
+        default: '2'
+
+permissions:
+  contents: read
+
+# Same group as worker-cron: never runs alongside it (one operator key, one nonce sequence).
+concurrency:
+  group: worker-cron
+  cancel-in-progress: false
+
+jobs:
+  seed-demo:
+    if: ${{ vars.SEED_DEMO_ENABLED == 'true' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: 11.28.12
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24.22.3
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      - run: pnpm turbo run build --filter=@veriwork/agent-worker
+      - name: Seed the demo campaigns
+        env:
+          NODE_ENV: production
+          DRY_RUN_INPUT: ${{ inputs.dry_run && 'true' || 'false' }}
+          REVIEW_WEEKS: ${{ inputs.review_weeks }}
+          LOG_LEVEL: ${{ vars.LOG_LEVEL || 'info' }}
+          CHAIN_ID: ${{ vars.CHAIN_ID || '42220' }}
+          CELO_RPC_URL: ${{ secrets.CELO_RPC_URL || 'https://forno.celo.org' }}
+          CELO_RPC_FALLBACK_URLS: https://forno.celo.org
+          VERIWORK_CORE_ADDRESS: ${{ vars.VERIWORK_CORE_ADDRESS }}
+          AGENT_REGISTRY_ADDRESS: ${{ vars.AGENT_REGISTRY_ADDRESS }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          OPERATOR_PRIVATE_KEY: ${{ secrets.OPERATOR_PRIVATE_KEY }}
+          AI_AGENT_PRIVATE_KEY: ${{ secrets.AI_AGENT_PRIVATE_KEY }}
+        run: |
+          case "$REVIEW_WEEKS" in
+            [1-8]) ;;
+            *) echo "review_weeks must be a number from 1 to 8"; exit 2 ;;
+          esac
+          if [ "$DRY_RUN_INPUT" = "true" ]; then
+            node packages/agent-worker/dist/seed-demo.js --dry-run --review-weeks "$REVIEW_WEEKS"
+          else
+            node packages/agent-worker/dist/seed-demo.js --review-weeks "$REVIEW_WEEKS"
+          fi
