@@ -15,6 +15,7 @@ import {
   type Hex,
   type TransactionReceipt,
 } from 'viem';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { PrivateKeyAccount } from 'viem/accounts';
 import type { Logger } from '../logging/logger';
 import type { WorkerPublicClient } from './clients';
@@ -60,7 +61,20 @@ export interface TxSenderOptions {
   readonly dryRun: boolean;
   readonly receiptTimeoutMs: number;
   readonly maxPriorityFeePerGas?: bigint;
+  /** Nonce re-reads before reporting a pending transaction (default 5 reads, 2 s apart). */
+  readonly idleRecheck?: IdleRecheck;
 }
+
+export interface IdleRecheck {
+  readonly attempts: number;
+  readonly delayMs: number;
+}
+
+/**
+ * forno is load-balanced: right after a receipt, another node can still report the previous nonce,
+ * which looks like a pending transaction. Nonces are re-read for a few seconds before trusting that.
+ */
+const DEFAULT_IDLE_RECHECK: IdleRecheck = { attempts: 5, delayMs: 2_000 };
 
 /** Gas limit headroom over `eth_estimateGas` (Superfluid token paths vary between blocks). */
 const GAS_HEADROOM_PERCENT = 130n;
@@ -85,6 +99,8 @@ export function printable(value: unknown): JsonValue {
  */
 export class TxSender {
   private tail: Promise<unknown> = Promise.resolve();
+  /** One past the nonce of this sender's last broadcast (a lagging node may still report less). */
+  private nonceFloor = 0;
 
   constructor(private readonly options: TxSenderOptions) {}
 
@@ -153,14 +169,25 @@ export class TxSender {
    * still in flight (the weekly epoch), so they never overwrite state a pending transaction relies on.
    */
   async assertIdle(): Promise<number> {
+    const { attempts, delayMs } = this.options.idleRecheck ?? DEFAULT_IDLE_RECHECK;
+    for (let attempt = 1; ; attempt += 1) {
+      const { latest, pending } = await this.nonces();
+      // A node behind this sender's own last broadcast reports less than `nonceFloor`.
+      const expected = pending > this.nonceFloor ? pending : this.nonceFloor;
+      if (latest >= expected) return latest;
+      if (attempt >= attempts) throw new PendingTransactionsError(this.address, latest, expected);
+      await sleep(delayMs);
+    }
+  }
+
+  private async nonces(): Promise<{ readonly latest: number; readonly pending: number }> {
     const client = this.options.publicClient;
     const address = this.address;
     const [latest, pending] = await Promise.all([
       client.getTransactionCount({ address, blockTag: 'latest' }),
       client.getTransactionCount({ address, blockTag: 'pending' }),
     ]);
-    if (pending > latest) throw new PendingTransactionsError(address, latest, pending);
-    return latest;
+    return { latest, pending };
   }
 
   private async prepare(write: ContractWrite): Promise<{ data: Hex; gas: bigint }> {
@@ -217,6 +244,7 @@ export class TxSender {
     // cannot be stored, nothing is sent.
     await sendOptions.onSent?.(hash);
     await this.broadcast(write.label, serialized, hash);
+    this.nonceFloor = nonce + 1;
     this.options.logger.info(
       { label: write.label, hash, nonce, to: write.address, fn: write.functionName },
       'transaction sent',

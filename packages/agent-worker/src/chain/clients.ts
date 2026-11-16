@@ -107,6 +107,7 @@ function sendingSigner(
     logger: logger.child({ signer: base.account.address }),
     dryRun: config.dryRun,
     receiptTimeoutMs: config.receiptTimeoutMs,
+    ...(config.idleRecheck === undefined ? {} : { idleRecheck: config.idleRecheck }),
   });
   return { ...base, sender };
 }

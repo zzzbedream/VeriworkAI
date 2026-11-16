@@ -136,7 +136,12 @@ export class World {
       },
       { once: true, dryRun: options.dryRun === true },
     );
-    return { ...loaded, receiptTimeoutMs: 3_000, ...options.config };
+    return {
+      ...loaded,
+      receiptTimeoutMs: 3_000,
+      idleRecheck: { attempts: 3, delayMs: 0 },
+      ...options.config,
+    };
   }
 
   context(databaseUrl: string, options: ContextOptions): OwnedContext {

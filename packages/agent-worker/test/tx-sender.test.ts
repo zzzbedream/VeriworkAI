@@ -81,6 +81,22 @@ describe('TxSender', () => {
     expect(world.chain.sentCalls()).toHaveLength(1);
   });
 
+  it('re-reads nonces from a lagging node instead of reporting a pending transaction', async () => {
+    const { world, operator, grant } = setup();
+    await operator.sender.send(grant);
+    world.chain.staleLatestNonceReads = 2;
+    await expect(operator.sender.send(grant)).resolves.toMatchObject({ status: 'confirmed' });
+    expect(world.chain.sentCalls()).toHaveLength(2);
+  });
+
+  it('never reuses a broadcast nonce when every read lags behind it', async () => {
+    const { world, operator, grant } = setup();
+    await operator.sender.send(grant);
+    world.chain.staleLatestNonceReads = 10;
+    await expect(operator.sender.send(grant)).rejects.toBeInstanceOf(PendingTransactionsError);
+    expect(world.chain.sentCalls()).toHaveLength(1);
+  });
+
   it('reports a mined revert as TxRevertedError', async () => {
     const { world, operator, grant } = setup();
     const spy = vi.spyOn(world.core, 'write');

@@ -107,6 +107,8 @@ export class FakeChain {
   logsNodeHead: bigint | null = null;
   /** Thrown by every eth_getLogs while set (any other RPC failure). */
   getLogsError: Error | null = null;
+  /** The next N "latest" eth_getTransactionCount reads come from a node one block behind. */
+  staleLatestNonceReads = 0;
   private readonly contracts = new Map<string, FakeContract>();
   private readonly txs = new Map<Hex, MinedTx>();
   private readonly nonces = new Map<string, number>();
@@ -492,9 +494,12 @@ export class FakeChain {
       }
       case 'eth_getTransactionCount': {
         const [address, tag] = params as [string, string];
-        return numberToHex(
-          this.nonceOf(address) + (tag === 'pending' ? this.pendingCount(address) : 0),
-        );
+        // A lagging load-balanced node: "latest" still reports the nonce before the last block.
+        const stale = tag !== 'pending' && this.staleLatestNonceReads > 0;
+        if (stale) this.staleLatestNonceReads -= 1;
+        const mined = this.nonceOf(address);
+        const reported = stale && mined > 0 ? mined - 1 : mined;
+        return numberToHex(reported + (tag === 'pending' ? this.pendingCount(address) : 0));
       }
       case 'eth_sendRawTransaction':
         return this.sendRaw(params[0] as Hex);
