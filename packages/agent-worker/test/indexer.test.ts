@@ -127,6 +127,32 @@ describe('indexer', () => {
     expect(await indexerJob.run(ctx as OwnedContext)).toMatchObject({ inserted: 0 });
   });
 
+  it('stops at a load-balanced RPC node that is behind the range and resumes on the next run', async () => {
+    const start = world.chain.blockNumber - 4_500n;
+    ctx = context({ startBlock: start });
+    await activity();
+    world.chain.logsNodeHead = start + 2_500n;
+    const first = await indexerJob.run(ctx as OwnedContext);
+    expect(first).toMatchObject({ deferredFrom: String(start + 2_000n), inserted: 0 });
+    expect(await getIndexerCheckpoint(prisma, checkpointId(ctx as OwnedContext))).toBe(
+      start + 1_999n,
+    );
+    world.chain.logsNodeHead = null;
+    const second = await indexerJob.run(ctx as OwnedContext);
+    expect(second).toMatchObject({ inserted: 5 });
+    expect(second).not.toHaveProperty('deferredFrom');
+    expect(await getIndexerCheckpoint(prisma, checkpointId(ctx as OwnedContext))).toBe(
+      world.chain.blockNumber,
+    );
+  });
+
+  it('still fails on RPC errors that are not a lagging node', async () => {
+    ctx = context();
+    world.chain.getLogsError = Object.assign(new Error('invalid params'), { code: -32602 });
+    await expect(indexerJob.run(ctx as OwnedContext)).rejects.toThrow(/invalid params/i);
+    expect(await getIndexerCheckpoint(prisma, checkpointId(ctx as OwnedContext))).toBeNull();
+  });
+
   it('dry-run reads the logs but writes nothing', async () => {
     ctx = context({ dryRun: true });
     await activity();

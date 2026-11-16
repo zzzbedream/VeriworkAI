@@ -188,7 +188,8 @@ const EnvSchema = z.object({
       .optional(),
   ),
   INDEXER_MAX_CHUNKS_PER_RUN: integer(20, 1, 1_000),
-  INDEXER_CONFIRMATIONS: integer(3, 0, 1_000),
+  // 30 s at 1 s blocks: forno is load-balanced and its nodes can trail the head by a few blocks.
+  INDEXER_CONFIRMATIONS: integer(30, 0, 1_000),
   BATCH_REVIEW_WEEKS: integer(1, 1, 8),
   BATCH_MIN_REVIEW_HOURS: integer(24, 1, 24 * 7),
   TX_RECEIPT_TIMEOUT_SECONDS: integer(120, 10, 3_600),

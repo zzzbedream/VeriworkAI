@@ -3,6 +3,7 @@ import {
   getIndexerCheckpoint,
   insertOnchainEvents,
   listUsers,
+  type OnchainEventInput,
   type UserRecord,
 } from '@veriwork/database';
 import type { Address } from '@veriwork/shared';
@@ -64,6 +65,35 @@ async function indexWindow(ctx: WorkerContext): Promise<IndexWindow> {
   return { from, head, to: head < cap ? head : cap };
 }
 
+/**
+ * Answers of a load-balanced RPC (forno) whose `eth_getLogs` node is behind the node that answered
+ * `eth_blockNumber`. The range is not lost: the next run continues from the checkpoint.
+ */
+const LAGGING_NODE_ERROR =
+  /block is out of range|header not found|unknown block|beyond (the )?current head|not yet available/i;
+
+export function isLaggingNodeError(error: unknown): boolean {
+  return error instanceof Error && LAGGING_NODE_ERROR.test(error.message);
+}
+
+/** The range's events, or `null` when the node answering `eth_getLogs` has not reached it yet. */
+async function fetchOrDefer(
+  ctx: WorkerContext,
+  range: BlockRange,
+  accounts: readonly Address[],
+): Promise<readonly OnchainEventInput[] | null> {
+  try {
+    return await fetchRangeEvents(ctx.chain, range, accounts);
+  } catch (error: unknown) {
+    if (!isLaggingNodeError(error)) throw error;
+    ctx.logger.warn(
+      { job: 'indexer', fromBlock: range.fromBlock.toString(), toBlock: range.toBlock.toString() },
+      'RPC node is behind this block range; the next run continues from the checkpoint',
+    );
+    return null;
+  }
+}
+
 const EMPTY_RECONCILE: ReconcileSummary = {
   campaigns: 0,
   stakes: 0,
@@ -99,9 +129,14 @@ export const indexerJob: Job = {
     let events = 0;
     let inserted = 0;
     let reconciled = EMPTY_RECONCILE;
+    let deferredFrom: string | null = null;
     for (const range of ranges) {
       if (ctx.signal.aborted) break;
-      const found = await fetchRangeEvents(ctx.chain, range, accounts);
+      const found = await fetchOrDefer(ctx, range, accounts);
+      if (found === null) {
+        deferredFrom = range.fromBlock.toString();
+        break;
+      }
       events += found.length;
       if (ctx.config.dryRun) continue;
       inserted += await insertOnchainEvents(ctx.db, found);
@@ -116,6 +151,7 @@ export const indexerJob: Job = {
       events,
       inserted,
       ...reconciled,
+      ...(deferredFrom === null ? {} : { deferredFrom }),
     };
   },
 };

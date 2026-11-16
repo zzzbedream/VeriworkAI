@@ -103,6 +103,10 @@ export class FakeChain {
   readonly sent: SentTransaction[] = [];
   readonly methods: string[] = [];
   readonly getLogsRanges: { readonly from: bigint; readonly to: bigint }[] = [];
+  /** Head of the load-balanced node that answers eth_getLogs when it lags (null: up to date). */
+  logsNodeHead: bigint | null = null;
+  /** Thrown by every eth_getLogs while set (any other RPC failure). */
+  getLogsError: Error | null = null;
   private readonly contracts = new Map<string, FakeContract>();
   private readonly txs = new Map<Hex, MinedTx>();
   private readonly nonces = new Map<string, number>();
@@ -441,6 +445,10 @@ export class FakeChain {
   }) {
     const from = filter.fromBlock === undefined ? 0n : BigInt(filter.fromBlock);
     const to = filter.toBlock === undefined ? this.blockNumber : BigInt(filter.toBlock);
+    if (this.getLogsError !== null) throw this.getLogsError;
+    // forno's answer when the node serving eth_getLogs has not reached `toBlock` yet.
+    if (this.logsNodeHead !== null && to > this.logsNodeHead)
+      throw rpcError('block is out of range', -32000);
     this.getLogsRanges.push({ from, to });
     const addresses =
       filter.address === undefined
