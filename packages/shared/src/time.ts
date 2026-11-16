@@ -21,6 +21,11 @@ export const STAKE_DEPOSIT_WINDOW = 2 * SECONDS_PER_DAY;
 export const SLASH_WINDOW_START = 5 * SECONDS_PER_DAY;
 /** Sunday 12:00 UTC: stakes unlock. */
 export const STAKE_UNLOCK = 6 * SECONDS_PER_DAY;
+/**
+ * Monday 12:00 UTC one week after the week ended: `settleEpoch` refuses the week from then on (late
+ * batches roll into a later epoch). A week is settleable in `[weekStart + 5d, weekStart + 14d)`.
+ */
+export const SETTLE_WINDOW_END = 14 * SECONDS_PER_DAY;
 
 export type UnixSeconds = number | bigint;
 
@@ -112,9 +117,27 @@ export function isStakeUnlocked(id: number | bigint, t: UnixSeconds): boolean {
   return toSeconds(t, 'timestamp') >= weekStart(id) + STAKE_UNLOCK;
 }
 
-/** `settleEpoch` requires `block.timestamp >= weekStart(epochId) + SLASH_WINDOW_START`. */
+export interface SettlementWindow {
+  /** First second `settleEpoch` accepts the week: its Saturday 12:00 UTC. */
+  readonly from: number;
+  /** First second it refuses the week again: the Monday 12:00 UTC after the following week. */
+  readonly until: number;
+}
+
+/**
+ * `[from, until)` in which `settleEpoch(epochId, ...)` accepts the week, the same values the contract
+ * reports in `EpochNotSettleable(epochId, settleableFrom, settleableUntil)`.
+ */
+export function settlementWindow(id: number | bigint): SettlementWindow {
+  const start = weekStart(id);
+  return { from: start + SLASH_WINDOW_START, until: start + SETTLE_WINDOW_END };
+}
+
+/** `settleEpoch` accepts the week at `t`: the current week from Saturday 12:00, or the previous week. */
 export function isSettlementOpen(id: number | bigint, t: UnixSeconds): boolean {
-  return toSeconds(t, 'timestamp') >= weekStart(id) + SLASH_WINDOW_START;
+  const seconds = toSeconds(t, 'timestamp');
+  const window = settlementWindow(id);
+  return seconds >= window.from && seconds < window.until;
 }
 
 /** Monday … Friday (dayIndex 0–4). */

@@ -182,7 +182,8 @@ function transitionData(
 /**
  * Compare-and-set state change mirroring the on-chain batch state machine, in one transaction that
  * locks the batch row (in-flight submissions, reviews and votes finish first). Returns `null` when the
- * batch is no longer in `from` (another worker run won). Cancelling closes open submissions atomically.
+ * batch is no longer in `from` (another worker run won). Cancelling voids open submissions atomically
+ * (a cancelled batch pays nobody).
  */
 export async function transitionBatch(
   prisma: PrismaClient,
@@ -203,7 +204,12 @@ export async function transitionBatch(
     if (to === 'CANCELLED') {
       await tx.taskSubmission.updateMany({
         where: { batchId, status: { in: ['PENDING_REVIEW', 'PENDING_QA'] } },
-        data: { status: 'REJECTED', activeItemId: null, finalizedAt: patch.now ?? new Date() },
+        data: {
+          status: 'VOIDED',
+          voidReason: 'BATCH_CANCELLED',
+          activeItemId: null,
+          finalizedAt: patch.now ?? new Date(),
+        },
       });
     }
     return toBatchRecord(updated);

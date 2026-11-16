@@ -49,6 +49,19 @@ export const agentRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "AGENT_CONSENT_TYPEHASH",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "BUCKET_COUNT",
     "inputs": [],
     "outputs": [
@@ -262,6 +275,78 @@ export const agentRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "consentDigest",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "metadataHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "deadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "eip712Domain",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "fields",
+        "type": "bytes1",
+        "internalType": "bytes1"
+      },
+      {
+        "name": "name",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "version",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "chainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "verifyingContract",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "salt",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensions",
+        "type": "uint256[]",
+        "internalType": "uint256[]"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "gToken",
     "inputs": [],
     "outputs": [
@@ -412,6 +497,21 @@ export const agentRegistryAbi = [
         "name": "metadataHash",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "maxBond",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "consentDeadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "consentSignature",
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ],
     "outputs": [],
@@ -430,6 +530,21 @@ export const agentRegistryAbi = [
         "name": "metadataHash",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "consentDeadline",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "consentSignature",
+        "type": "bytes",
+        "internalType": "bytes"
+      },
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
       },
       {
         "name": "deadline",
@@ -626,6 +741,19 @@ export const agentRegistryAbi = [
   },
   {
     "type": "function",
+    "name": "surplus",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "suspendAgent",
     "inputs": [
       {
@@ -637,6 +765,24 @@ export const agentRegistryAbi = [
         "name": "reasonHash",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "sweepSurplus",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -840,6 +986,12 @@ export const agentRegistryAbi = [
   },
   {
     "type": "event",
+    "name": "EIP712DomainChanged",
+    "inputs": [],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "MaxRollingOutflowUpdated",
     "inputs": [
       {
@@ -1022,6 +1174,25 @@ export const agentRegistryAbi = [
   },
   {
     "type": "event",
+    "name": "SurplusSwept",
+    "inputs": [
+      {
+        "name": "to",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "Unpaused",
     "inputs": [
       {
@@ -1078,6 +1249,33 @@ export const agentRegistryAbi = [
   },
   {
     "type": "error",
+    "name": "AgentHasNoBond",
+    "inputs": [
+      {
+        "name": "agentAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "BondAboveMax",
+    "inputs": [
+      {
+        "name": "bond",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxBond",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "BondLocked",
     "inputs": [
       {
@@ -1087,6 +1285,17 @@ export const agentRegistryAbi = [
       },
       {
         "name": "unbondAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ConsentExpired",
+    "inputs": [
+      {
+        "name": "deadline",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1104,8 +1313,19 @@ export const agentRegistryAbi = [
   },
   {
     "type": "error",
-    "name": "FeeOnTransferNotSupported",
-    "inputs": []
+    "name": "InsufficientSurplus",
+    "inputs": [
+      {
+        "name": "available",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -1133,6 +1353,33 @@ export const agentRegistryAbi = [
         "internalType": "enum AgentRegistry.AgentStatus"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidConsent",
+    "inputs": [
+      {
+        "name": "agentAddress",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidRecipient",
+    "inputs": [
+      {
+        "name": "recipient",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidShortString",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1216,6 +1463,22 @@ export const agentRegistryAbi = [
   },
   {
     "type": "error",
+    "name": "ReceiverFeeNotSupported",
+    "inputs": [
+      {
+        "name": "received",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ReentrancyGuardReentrantCall",
     "inputs": []
   },
@@ -1264,7 +1527,39 @@ export const agentRegistryAbi = [
   },
   {
     "type": "error",
+    "name": "SenderFeeNotSupported",
+    "inputs": [
+      {
+        "name": "spent",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StringTooLong",
+    "inputs": [
+      {
+        "name": "str",
+        "type": "string",
+        "internalType": "string"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAmount",
     "inputs": []
   }
 ] as const;

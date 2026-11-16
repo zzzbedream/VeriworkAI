@@ -24,14 +24,28 @@ export const MAX_PLATFORM_FEE_BPS = 2_000;
 /** Exactly 20% of every fee goes to the GoodDollar UBI pool (constant on-chain). */
 export const UBI_SHARE_BPS = 2_000;
 
+/** Standard QA profile (the default): 3 votes, 2 approvals accept. */
 export const QA_QUORUM = 3;
 export const QA_APPROVALS_REQUIRED = 2;
+/** Accepted tasks that qualify a root as reviewer / QA without an admin-granted role. */
 export const REVIEWER_MIN_ACCEPTED = 10;
 export const QA_MIN_ACCEPTED = 25;
 export const REVIEW_SCORE_MIN = 1;
 export const REVIEW_SCORE_MAX = 5;
-/** Reviewer scores below this reject the submission. */
+/** A review verdict is "accept" from this score up; below it the reviewer must give a reason. */
 export const REVIEW_PASSING_SCORE = 3;
+
+/** After a rejection the item reopens for a different worker; it closes after this many attempts. */
+export const MAX_ATTEMPTS_PER_ITEM = 2;
+/**
+ * Highest attempt unverified (trial) work may take. The last attempt needs a verified human: trial
+ * wallets cost nothing to create, so they must never be able to close an item on their own.
+ */
+export const TRIAL_MAX_ATTEMPT = MAX_ATTEMPTS_PER_ITEM - 1;
+/** Decisions a root needs in a role before its agreement rate can disqualify it in that role. */
+export const REPUTATION_MIN_DECISIONS = 10;
+/** Minimum agreement with the final verdict (70%) once `REPUTATION_MIN_DECISIONS` is reached. */
+export const REPUTATION_MIN_AGREEMENT_BPS = 7_000;
 
 export const MAX_SLASH_BPS = 5_000;
 /** Weekly stake slash applied by the Saturday job (25%). */
@@ -80,38 +94,94 @@ export function batchReservation(maxPayout: bigint, feeBps: number): bigint {
   return maxPayout + computeFee(maxPayout, feeBps);
 }
 
+/** How a campaign's QA decides a submission: `qaQuorum` votes, `qaApprovalsRequired` of them accept. */
+export interface QaProfile {
+  readonly qaQuorum: number;
+  readonly qaApprovalsRequired: number;
+}
+
+/**
+ * The allowed per-campaign QA profiles. Standard is the default; with Pilot a single QA vote decides,
+ * so an item is still completed by 3 distinct verified humans (worker, reviewer, QA).
+ */
+export const QA_PROFILES = {
+  STANDARD: { qaQuorum: QA_QUORUM, qaApprovalsRequired: QA_APPROVALS_REQUIRED },
+  PILOT: { qaQuorum: 1, qaApprovalsRequired: 1 },
+} as const satisfies Readonly<Record<string, QaProfile>>;
+export type QaProfileName = keyof typeof QA_PROFILES;
+export const QA_PROFILE_NAMES = ['STANDARD', 'PILOT'] as const satisfies readonly QaProfileName[];
+export const DEFAULT_QA_PROFILE_NAME: QaProfileName = 'STANDARD';
+export const DEFAULT_QA_PROFILE: QaProfile = QA_PROFILES[DEFAULT_QA_PROFILE_NAME];
+/** Largest quorum of any profile (bounds vote counts). */
+export const MAX_QA_QUORUM = Math.max(
+  ...QA_PROFILE_NAMES.map((name) => QA_PROFILES[name].qaQuorum),
+);
+
+/** Name of an allowed QA profile, `null` for any other combination. */
+export function qaProfileName(profile: QaProfile): QaProfileName | null {
+  const match = QA_PROFILE_NAMES.find(
+    (name) =>
+      QA_PROFILES[name].qaQuorum === profile.qaQuorum &&
+      QA_PROFILES[name].qaApprovalsRequired === profile.qaApprovalsRequired,
+  );
+  return match ?? null;
+}
+
+/** Name of an allowed QA profile; throws for any other combination. */
+export function assertQaProfile(profile: QaProfile): QaProfileName {
+  const name = qaProfileName(profile);
+  if (name === null) {
+    throw new RangeError(
+      `Unknown QA profile: quorum ${profile.qaQuorum}, approvals ${profile.qaApprovalsRequired}`,
+    );
+  }
+  return name;
+}
+
 export interface ItemPricing {
   readonly rewardPerItemWei: bigint;
   readonly reviewerFeeWei: bigint;
   readonly qaFeeWei: bigint;
 }
 
-/**
- * Most a single item can pay: one accepted submission (worker reward + reviewer fee + one QA fee per
- * quorum vote). Only accepted submissions are paid, and an item has at most one accepted submission.
- */
-export function itemMaxPayout(pricing: ItemPricing): bigint {
-  assertNonNegative(pricing.rewardPerItemWei, 'rewardPerItemWei');
-  assertNonNegative(pricing.reviewerFeeWei, 'reviewerFeeWei');
-  assertNonNegative(pricing.qaFeeWei, 'qaFeeWei');
-  return pricing.rewardPerItemWei + pricing.reviewerFeeWei + pricing.qaFeeWei * BigInt(QA_QUORUM);
+/** Everything an item's worst-case payout depends on: the campaign's prices and its QA profile. */
+export interface CampaignPayTerms extends ItemPricing, QaProfile {}
+
+/** Non-negative prices and an allowed QA profile. */
+export function assertPayTerms(terms: CampaignPayTerms): void {
+  assertNonNegative(terms.rewardPerItemWei, 'rewardPerItemWei');
+  assertNonNegative(terms.reviewerFeeWei, 'reviewerFeeWei');
+  assertNonNegative(terms.qaFeeWei, 'qaFeeWei');
+  assertQaProfile(terms);
 }
 
-/** `maxPayout` passed to `openBatch` for `itemCount` items. */
-export function batchMaxPayout(itemCount: number, pricing: ItemPricing): bigint {
+/**
+ * Most a single item can pay: one worker reward (an item has at most one accepted submission) plus,
+ * for each of its at most `MAX_ATTEMPTS_PER_ITEM` attempts, a reviewer fee and one QA fee per quorum
+ * vote (reviewers and QA are paid when their decision matches the final verdict, accept or reject;
+ * a rejected trial attempt pays nobody, which only lowers the payout).
+ */
+export function itemMaxPayout(terms: CampaignPayTerms): bigint {
+  assertPayTerms(terms);
+  const perAttempt = terms.reviewerFeeWei + terms.qaFeeWei * BigInt(terms.qaQuorum);
+  return terms.rewardPerItemWei + perAttempt * BigInt(MAX_ATTEMPTS_PER_ITEM);
+}
+
+/** `maxPayout` passed to `openBatch` for `itemCount` items (worst case of every item). */
+export function batchMaxPayout(itemCount: number, terms: CampaignPayTerms): bigint {
   if (!Number.isSafeInteger(itemCount) || itemCount < 0) {
     throw new RangeError(`itemCount must be a non-negative integer: ${itemCount}`);
   }
-  return BigInt(itemCount) * itemMaxPayout(pricing);
+  return BigInt(itemCount) * itemMaxPayout(terms);
 }
 
-/** G$ a sponsor must escrow so every target item can be reserved: payout plus the platform fee. */
+/** G$ a sponsor must escrow so every target item can be reserved: worst-case payout plus the fee. */
 export function campaignFundingRequired(
   itemsTarget: number,
-  pricing: ItemPricing,
+  terms: CampaignPayTerms,
   feeBps: number,
 ): bigint {
-  return batchReservation(batchMaxPayout(itemsTarget, pricing), feeBps);
+  return batchReservation(batchMaxPayout(itemsTarget, terms), feeBps);
 }
 
 /** Slashed part of a stake; `slashBps` is capped at `MAX_SLASH_BPS` like the contract. */

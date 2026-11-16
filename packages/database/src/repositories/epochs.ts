@@ -15,6 +15,7 @@ import type {
   Prisma,
   PrismaClient,
 } from '../generated/prisma/client';
+import { mapSequential } from '../sequential';
 import { getBatchPayout } from './batch-consensus';
 
 export interface EpochRecord {
@@ -157,17 +158,16 @@ async function checkBatches(
     : `Σ allocations ${total} != Σ payouts ${payouts} + bonus ${input.bonusWei}`;
 }
 
-/** The five-day bonus is paid at most once per human: bonus wallets need distinct staked roots. */
 /**
  * Per-wallet check: apart from the bonus, every allocation must equal what the settled batches owe
- * that wallet (tasks / reviews / QA and the trial part), so the merkle tree pays exactly the
- * accepted work and nobody else.
+ * that wallet under the pay rules (tasks / reviews / QA and the trial part), so the merkle tree pays
+ * exactly the paid-for work and decisions, and nobody else.
  */
 async function checkAllocationLines(
   tx: Prisma.TransactionClient,
   input: EpochDraftInput,
 ): Promise<string | null> {
-  const payouts = await Promise.all(input.batchIds.map((batchId) => getBatchPayout(tx, batchId)));
+  const payouts = await mapSequential(input.batchIds, (batchId) => getBatchPayout(tx, batchId));
   const owed = aggregateAllocations(payouts.flatMap((payout) => payout?.lines ?? []));
   const byWallet = new Map(owed.allocations.map((allocation) => [allocation.account, allocation]));
   const wrong = input.allocations.find((allocation) => {
@@ -189,6 +189,7 @@ async function checkAllocationLines(
     : `${missing.account} is owed batch work but has no allocation`;
 }
 
+/** The five-day bonus is paid at most once per human: bonus wallets need distinct staked roots. */
 async function checkBonusRoots(
   tx: Prisma.TransactionClient,
   input: EpochDraftInput,

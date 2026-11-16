@@ -1,4 +1,11 @@
-import type { Address, Hex } from '@veriwork/shared';
+import {
+  assertQaProfile,
+  DEFAULT_QA_PROFILE_NAME,
+  QA_PROFILES,
+  type Address,
+  type Hex,
+  type QaProfileName,
+} from '@veriwork/shared';
 import {
   bytes32,
   bytes32OrNull,
@@ -25,6 +32,10 @@ export interface CampaignRecord {
   readonly reviewerFeeWei: bigint;
   readonly qaFeeWei: bigint;
   readonly itemsTarget: number;
+  /** QA profile (fixed at creation): votes per submission and approvals that accept it. */
+  readonly qaProfile: QaProfileName;
+  readonly qaQuorum: number;
+  readonly qaApprovalsRequired: number;
   readonly status: CampaignStatus;
   /** Net G$ escrowed on-chain (fundings minus withdrawals), synced from indexed events. */
   readonly fundedWei: bigint;
@@ -41,6 +52,7 @@ export function toCampaignRecord(campaign: Campaign): CampaignRecord {
     rewardPerItemWei: toWei(campaign.rewardPerItemWei),
     reviewerFeeWei: toWei(campaign.reviewerFeeWei),
     qaFeeWei: toWei(campaign.qaFeeWei),
+    qaProfile: assertQaProfile(campaign),
     fundedWei: toWei(campaign.fundedWei),
     fundTxHash: bytes32OrNull(campaign.fundTxHash),
   };
@@ -58,17 +70,35 @@ export interface CreateCampaignInput {
   readonly reviewerFeeWei: bigint;
   readonly qaFeeWei: bigint;
   readonly itemsTarget: number;
+  /**
+   * STANDARD (3 votes, 2 approvals) when omitted. PILOT (1 vote, 1 approval) needs `allowPilot`.
+   */
+  readonly qaProfile?: QaProfileName;
   /** bytes32 id used on-chain (`fundCampaign(campaignId, ...)`); random when omitted. */
   readonly onchainId?: string;
+}
+
+export interface CreateCampaignOptions {
+  /**
+   * Admin callers only (the platform's own, grant-funded campaigns): allows the PILOT profile, whose
+   * single QA vote nobody checks. A sponsor (B2B) request never passes it; without it PILOT is refused.
+   */
+  readonly allowPilot?: boolean;
 }
 
 export async function createCampaign(
   db: DbClient,
   input: CreateCampaignInput,
+  options: CreateCampaignOptions = {},
 ): Promise<CampaignRecord> {
   if (!Number.isSafeInteger(input.itemsTarget) || input.itemsTarget < 1) {
     throw new RangeError(`itemsTarget must be a positive integer: ${input.itemsTarget}`);
   }
+  const profileName = input.qaProfile ?? DEFAULT_QA_PROFILE_NAME;
+  if (profileName !== DEFAULT_QA_PROFILE_NAME && options.allowPilot !== true) {
+    throw new RangeError(`The ${profileName} QA profile needs allowPilot (admin callers only)`);
+  }
+  const profile = QA_PROFILES[profileName];
   const campaign = await db.campaign.create({
     data: {
       onchainId:
@@ -84,6 +114,8 @@ export async function createCampaign(
       reviewerFeeWei: weiInput(input.reviewerFeeWei),
       qaFeeWei: weiInput(input.qaFeeWei),
       itemsTarget: input.itemsTarget,
+      qaQuorum: profile.qaQuorum,
+      qaApprovalsRequired: profile.qaApprovalsRequired,
     },
   });
   return toCampaignRecord(campaign);

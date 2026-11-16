@@ -9,6 +9,7 @@ import {
   G_DOLLAR_PERMIT_DOMAIN,
   getVeriWorkDeployment,
   GOODDOLLAR_CELO,
+  KNOWN_DEPLOYMENTS,
   usesMainnetGoodDollar,
 } from '../src/addresses';
 import {
@@ -162,9 +163,28 @@ describe('getVeriWorkDeployment', () => {
     ).toThrow(DeploymentConfigError);
   });
 
+  it('defaults to the known Celo mainnet deployment; env overrides win', () => {
+    expect(getVeriWorkDeployment(CELO_CHAIN_ID, {})).toEqual({
+      chainId: CELO_CHAIN_ID,
+      core: '0xeC9Ea648d5F8C3bcb5E26Bd155dCf27Ed4B51c25',
+      agentRegistry: '0x7D251CB1C4321cEff128F265CA17a2F65F85F05E',
+      gToken: GOODDOLLAR_CELO.gDollar,
+      identity: GOODDOLLAR_CELO.identity,
+    });
+    for (const deployment of Object.values(KNOWN_DEPLOYMENTS)) {
+      expect(getAddress(deployment.core)).toBe(deployment.core);
+      expect(getAddress(deployment.agentRegistry)).toBe(deployment.agentRegistry);
+    }
+    expect(getVeriWorkDeployment(CELO_CHAIN_ID, { VERIWORK_CORE_ADDRESS: CORE }).core).toBe(
+      getAddress(CORE),
+    );
+    // No default elsewhere: other chains still need explicit addresses.
+    expect(() => getVeriWorkDeployment(ANVIL_CHAIN_ID, {})).toThrow(DeploymentConfigError);
+  });
+
   it('lists every missing or invalid value', () => {
     try {
-      getVeriWorkDeployment(CELO_CHAIN_ID, {
+      getVeriWorkDeployment(ANVIL_CHAIN_ID, {
         VERIWORK_CORE_ADDRESS: '0x1234',
         AGENT_REGISTRY_ADDRESS: '',
       });

@@ -1,13 +1,28 @@
-import { normalizeRoot, type Address, type Hex } from '@veriwork/shared';
+import {
+  isSameHuman,
+  MAX_ATTEMPTS_PER_ITEM,
+  normalizeRoot,
+  TRIAL_MAX_ATTEMPT,
+  type Address,
+  type Hex,
+} from '@veriwork/shared';
 import { bytes32OrNull, lower, lowerOrNull, toWei, weiInput } from '../convert';
 import type { DbClient } from '../db-types';
-import type {
+import {
   Prisma,
-  PrismaClient,
-  SubmissionStatus,
-  TaskSubmission,
-  TaskType,
+  type PrismaClient,
+  type SubmissionStatus,
+  type SubmissionVoidReason,
+  type TaskSubmission,
+  type TaskType,
 } from '../generated/prisma/client';
+import {
+  actorIdentifiers,
+  getItemParticipation,
+  sponsorParty,
+  sponsorsCampaign,
+  tookPartInItem,
+} from './conflicts';
 import { lockOpenBatch } from './locks';
 import { recordTrialTask, type TrialSessionRecord } from './trial';
 import { markTaskDay } from './wallet-week';
@@ -21,12 +36,20 @@ export interface SubmissionRecord {
   readonly isTrial: boolean;
   readonly humanCorrection: Prisma.JsonValue;
   readonly status: SubmissionStatus;
+  /** 1-based attempt on the item (at most `MAX_ATTEMPTS_PER_ITEM`). */
+  readonly attempt: number;
   readonly reviewerAddress: Address | null;
   readonly reviewerRoot: Address | null;
   readonly reviewerScore: number | null;
+  /** The reviewer's verdict (score >= 3 = accept), compared with the QA verdict for payment. */
+  readonly reviewerApprove: boolean | null;
   readonly reviewerNotes: string | null;
   readonly reviewedAt: Date | null;
+  /** QA verdict: true = ACCEPTED, false = REJECTED. */
   readonly qaPassed: boolean | null;
+  /** Why a VOIDED submission closed without a verdict (it pays nobody). */
+  readonly voidReason: SubmissionVoidReason | null;
+  /** When it was accepted, rejected or voided. */
   readonly finalizedAt: Date | null;
   readonly rewardWei: bigint;
   readonly epochId: number | null;
@@ -44,12 +67,15 @@ export function toSubmissionRecord(submission: TaskSubmission): SubmissionRecord
     isTrial: submission.isTrial,
     humanCorrection: submission.humanCorrection,
     status: submission.status,
+    attempt: submission.attempt,
     reviewerAddress: lowerOrNull(submission.reviewerAddress),
     reviewerRoot: lowerOrNull(submission.reviewerRoot),
     reviewerScore: submission.reviewerScore,
+    reviewerApprove: submission.reviewerApprove,
     reviewerNotes: submission.reviewerNotes,
     reviewedAt: submission.reviewedAt,
     qaPassed: submission.qaPassed,
+    voidReason: submission.voidReason,
     finalizedAt: submission.finalizedAt,
     rewardWei: toWei(submission.rewardWei),
     epochId: submission.epochId,
@@ -82,6 +108,8 @@ export type CreateSubmissionFailure =
   | 'CAMPAIGN_NOT_ACTIVE'
   | 'ALREADY_SUBMITTED'
   | 'ITEM_UNAVAILABLE'
+  /** The item used all its attempts (`MAX_ATTEMPTS_PER_ITEM`): it is closed for good. */
+  | 'ITEM_CLOSED'
   | 'TRIAL_LIMIT_REACHED';
 
 export type CreateSubmissionResult =
@@ -115,15 +143,35 @@ async function loadSubmittable(tx: Prisma.TransactionClient, input: CreateSubmis
   const { campaign } = item.batch;
   if (campaign.status !== 'FUNDED' && campaign.status !== 'ACTIVE')
     throw new SubmissionRefused('CAMPAIGN_NOT_ACTIVE');
-  if (campaign.sponsorAddress === workerAddress) throw new SubmissionRefused('ITEM_UNAVAILABLE');
   const workerRoot = normalizeRoot(input.workerRoot);
-  if (
-    workerRoot !== null &&
-    (await tx.taskSubmission.count({ where: { itemId: item.id, workerRoot } })) > 0
-  ) {
-    throw new SubmissionRefused('ALREADY_SUBMITTED');
-  }
+  const sponsor = await sponsorParty(tx, campaign.sponsorAddress);
+  if (isSameHuman({ address: workerAddress, root: workerRoot }, sponsor))
+    throw new SubmissionRefused('ITEM_UNAVAILABLE');
   return { item, workerAddress, workerRoot };
+}
+
+/**
+ * Next attempt number on the item, or a refusal: this human already worked on it (any wallet),
+ * no attempt left, this human already reviewed or voted on an attempt of it (it saw and decided
+ * that work, so it never takes the retry), or (trial work) only the last attempt left, which is
+ * reserved for a verified human.
+ */
+async function nextAttempt(
+  tx: Prisma.TransactionClient,
+  itemId: string,
+  ids: readonly string[],
+  isTrial: boolean,
+): Promise<number> {
+  // Lock order: the batch (FOR SHARE, taken above), then the item's submissions. A review or vote in
+  // flight on an earlier attempt holds that row FOR UPDATE, so this waits for it and the check below
+  // sees its decision: whoever just rejected an attempt can never slip in as the retry's worker.
+  await tx.$queryRaw`SELECT "id" FROM "TaskSubmission" WHERE "itemId" = ${itemId}::uuid FOR SHARE`;
+  const { attempts, worked, decided } = await getItemParticipation(tx, itemId, ids);
+  if (worked) throw new SubmissionRefused('ALREADY_SUBMITTED');
+  if (attempts >= MAX_ATTEMPTS_PER_ITEM) throw new SubmissionRefused('ITEM_CLOSED');
+  if (decided) throw new SubmissionRefused('ITEM_UNAVAILABLE');
+  if (isTrial && attempts + 1 > TRIAL_MAX_ATTEMPT) throw new SubmissionRefused('ITEM_UNAVAILABLE');
+  return attempts + 1;
 }
 
 async function insertSubmission(
@@ -132,19 +180,23 @@ async function insertSubmission(
   now: Date,
 ): Promise<{ readonly submission: SubmissionRecord; readonly trial: TrialSessionRecord | null }> {
   const { item, workerAddress, workerRoot } = await loadSubmittable(tx, input);
+  const ids = actorIdentifiers(workerAddress, workerRoot);
+  const attempt = await nextAttempt(tx, item.id, ids, input.isTrial);
   const rewardWei = toWei(item.batch.campaign.rewardPerItemWei);
   const trialResult = input.isTrial
     ? await recordTrialTask(tx, workerAddress, rewardWei, now)
     : null;
   if (trialResult !== null && !trialResult.ok) throw new SubmissionRefused('TRIAL_LIMIT_REACHED');
-  // ON CONFLICT DO NOTHING: the unique indexes (one live submission per item, one per worker and
-  // item) refuse duplicates without a failing statement, which would poison the transaction.
+  // ON CONFLICT DO NOTHING: the unique indexes refuse duplicates without a failing statement, which
+  // would poison the transaction. One live submission per item, one per worker and item, and one per
+  // (item, attempt): two creators that computed the same attempt from the same count cannot both win,
+  // and attempt <= MAX_ATTEMPTS_PER_ITEM (CHECK), so an item never gets more submissions than that.
   const rows = await tx.$queryRaw<{ id: string }[]>`
     INSERT INTO "TaskSubmission" ("id", "itemId", "batchId", "workerAddress", "workerRoot", "isTrial",
-      "humanCorrection", "status", "activeItemId", "rewardWei", "createdAt", "updatedAt")
+      "humanCorrection", "status", "activeItemId", "attempt", "rewardWei", "createdAt", "updatedAt")
     VALUES (${crypto.randomUUID()}::uuid, ${item.id}::uuid, ${item.batchId}::uuid, ${workerAddress}, ${workerRoot},
       ${input.isTrial}, ${JSON.stringify(input.correction)}::jsonb, 'PENDING_REVIEW', ${item.id}::uuid,
-      ${weiInput(rewardWei)}::numeric, ${now}::timestamptz, ${now}::timestamptz)
+      ${attempt}::int, ${weiInput(rewardWei)}::numeric, ${now}::timestamptz, ${now}::timestamptz)
     ON CONFLICT DO NOTHING
     RETURNING "id"`;
   const id = rows[0]?.id;
@@ -162,9 +214,12 @@ async function insertSubmission(
 
 /**
  * Creates a submission in one transaction: batch still open, at most one live submission per item,
- * one submission per worker / human and item, and on the trial path the atomic 2-task counter +
- * escrow (rolled back with the submission when it is refused). Verified workers also get today's
- * Wallet Week task bit.
+ * at most `MAX_ATTEMPTS_PER_ITEM` (2) submissions per item ever (a rejected item reopens once, for a
+ * different human; trial work never takes the last attempt, so only a verified human's rejected work
+ * can close an item), one submission per worker / human and item, never by the campaign's sponsor or
+ * by anyone who reviewed or voted on an attempt of the item, and on the trial path the atomic 2-task
+ * counter + escrow (rolled back with the submission when it is refused). Verified workers also get
+ * today's Wallet Week task bit.
  */
 export async function createSubmission(
   prisma: PrismaClient,
@@ -206,8 +261,9 @@ export interface TaskCandidate {
 
 /**
  * Next item for a worker: published batch, not frozen, campaign active, no live submission on the
- * item, never submitted by this wallet or this GoodID root, language and module requirements met,
- * and not the worker's own campaign.
+ * item, attempts left (`MAX_ATTEMPTS_PER_ITEM`; trial callers never get the last one), language and
+ * module requirements met, not the worker's own campaign, and never an item this human (wallet or
+ * GoodID root) already worked, reviewed or voted on.
  */
 export async function getNextTaskForWorker(
   db: DbClient,
@@ -215,22 +271,24 @@ export async function getNextTaskForWorker(
 ): Promise<TaskCandidate | null> {
   const wallet = lower(query.walletAddress);
   const root = normalizeRoot(query.root);
+  const ids = actorIdentifiers(wallet, root);
   const languages = [...(query.languages ?? [])];
   const modules = [...(query.ownedModuleIds ?? [])];
+  // Trial callers (no root) may only take attempts up to TRIAL_MAX_ATTEMPT.
+  const attemptLimit = root === null ? TRIAL_MAX_ATTEMPT : MAX_ATTEMPTS_PER_ITEM;
   const rows = await db.$queryRaw<{ id: string }[]>`
     SELECT i."id" FROM "TaskItem" i
     JOIN "TaskBatch" b ON b."id" = i."batchId"
     JOIN "Campaign" c ON c."id" = b."campaignId"
     WHERE b."status" = 'IN_HUMAN_REVIEW' AND b."consensusAt" IS NULL
       AND c."status" IN ('FUNDED', 'ACTIVE')
-      AND c."sponsorAddress" <> ${wallet}
+      AND NOT ${sponsorsCampaign(Prisma.sql`c."sponsorAddress"`, ids)}
       AND (c."requiredModuleId" IS NULL OR c."requiredModuleId" = ANY(${modules}::int[]))
       AND (${languages.length === 0} OR cardinality(c."languages") = 0 OR c."languages" && ${languages}::text[])
+      AND (SELECT count(*) FROM "TaskSubmission" a WHERE a."itemId" = i."id") < ${attemptLimit}
       AND NOT EXISTS (
-        SELECT 1 FROM "TaskSubmission" s
-        WHERE s."itemId" = i."id"
-          AND (s."activeItemId" IS NOT NULL OR s."workerAddress" = ${wallet}
-               OR (${root}::text IS NOT NULL AND s."workerRoot" = ${root}::text)))
+        SELECT 1 FROM "TaskSubmission" s WHERE s."itemId" = i."id" AND s."activeItemId" IS NOT NULL)
+      AND NOT ${tookPartInItem(Prisma.sql`i."id"`, ids)}
     -- Oldest batch first; inside it a per-worker pseudo-random order, so concurrent workers are handed
     -- different items instead of racing for the same one.
     ORDER BY b."publishedAt" ASC NULLS LAST, b."createdAt" ASC, md5(i."id"::text || ${wallet}) ASC
@@ -256,7 +314,7 @@ export async function getNextTaskForWorker(
   };
 }
 
-/** Accepted tasks of a GoodID root (reviewer >= 10, QA >= 25); 0 for the zero address. */
+/** Accepted tasks of a GoodID root (history: reviewer >= 10, QA >= 25); 0 for the zero address. */
 export async function countAcceptedByRoot(db: DbClient, root: string): Promise<number> {
   const workerRoot = normalizeRoot(root);
   return workerRoot === null
@@ -270,7 +328,11 @@ export interface RootQaStats {
   readonly rejected: number;
 }
 
-/** Per worker root, submissions finalized in `[from, to)` and how many were rejected (stake slashing). */
+/**
+ * Per worker root, submissions with a QA verdict in `[from, to)` and how many were rejected (stake
+ * slashing). VOIDED submissions (batch frozen or cancelled, conflict of interest) are not verdicts
+ * and never count against the worker.
+ */
 export async function getWorkerQaStats(
   db: DbClient,
   range: { readonly from: Date; readonly to: Date },

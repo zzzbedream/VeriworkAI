@@ -21,10 +21,13 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const MIGRATIONS_DIR = join(PACKAGE_ROOT, 'prisma', 'migrations');
 const MIGRATE_TIMEOUT_MS = 120_000;
 
-export type MigrationStrategy = 'auto' | 'migrate-deploy' | 'sql';
+export type MigrationStrategy = 'auto' | 'migrate-deploy' | 'sql' | 'none';
 
 export interface StartTestDatabaseOptions {
-  /** `auto` (default): `prisma migrate deploy`, falling back to the SQL files on failure. */
+  /**
+   * `auto` (default): `prisma migrate deploy`, falling back to the SQL files on failure. `none`: an
+   * empty database, for tests that apply `readMigrationFiles()` themselves (e.g. upgrade tests).
+   */
   readonly migrations?: MigrationStrategy;
   /** Server name (must be unique among concurrently running @prisma/dev servers). */
   readonly name?: string;
@@ -32,7 +35,7 @@ export interface StartTestDatabaseOptions {
 
 export interface TestDatabase {
   readonly url: string;
-  readonly appliedWith: 'migrate-deploy' | 'sql';
+  readonly appliedWith: 'migrate-deploy' | 'sql' | 'none';
   close(): Promise<void>;
 }
 
@@ -88,6 +91,7 @@ async function migrate(
   url: string,
   strategy: MigrationStrategy,
 ): Promise<TestDatabase['appliedWith']> {
+  if (strategy === 'none') return 'none';
   if (strategy === 'sql') {
     await applyMigrationsWithSql(url);
     return 'sql';

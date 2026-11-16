@@ -2,28 +2,40 @@ import { describe, expect, it } from 'vitest';
 import { gDollars, UINT128_MAX, UINT256_MAX } from '../src/amounts';
 import {
   AGENT_BOND,
+  assertPayTerms,
+  assertQaProfile,
   batchMaxPayout,
   batchReservation,
   BPS,
   campaignFundingRequired,
   computeFee,
   computeSlashAmount,
+  DEFAULT_QA_PROFILE,
+  DEFAULT_QA_PROFILE_NAME,
   exceedsRejectRate,
   FIVE_DAY_BONUS,
   isModuleId,
   isValidTaskReward,
   itemMaxPayout,
+  MAX_ATTEMPTS_PER_ITEM,
+  MAX_QA_QUORUM,
   MAX_SLASH_BPS,
   MODULE_PRICES,
   PLATFORM_FEE_BPS,
   QA_APPROVALS_REQUIRED,
   QA_MIN_ACCEPTED,
+  QA_PROFILE_NAMES,
+  QA_PROFILES,
   QA_QUORUM,
+  qaProfileName,
+  REPUTATION_MIN_AGREEMENT_BPS,
+  REPUTATION_MIN_DECISIONS,
   REVIEWER_MIN_ACCEPTED,
   splitFee,
   STAKE_AMOUNT,
   TASK_REWARD_MAX,
   TASK_REWARD_MIN,
+  TRIAL_MAX_ATTEMPT,
   TRIAL_TASK_LIMIT,
   UBI_SHARE_BPS,
 } from '../src/tokenomics';
@@ -71,6 +83,8 @@ describe('protocol constants', () => {
     expect(MAX_SLASH_BPS).toBe(5_000);
     expect(REVIEWER_MIN_ACCEPTED).toBe(10);
     expect(QA_MIN_ACCEPTED).toBe(25);
+    expect(REPUTATION_MIN_DECISIONS).toBe(10);
+    expect(REPUTATION_MIN_AGREEMENT_BPS).toBe(7_000);
   });
 });
 
@@ -125,32 +139,76 @@ describe('computeFee / batchReservation', () => {
   });
 });
 
-describe('item and campaign pricing', () => {
+describe('QA profiles', () => {
+  it('Standard 3/2 is the default, Pilot is 1/1', () => {
+    expect(QA_PROFILES).toEqual({
+      STANDARD: { qaQuorum: 3, qaApprovalsRequired: 2 },
+      PILOT: { qaQuorum: 1, qaApprovalsRequired: 1 },
+    });
+    expect([...QA_PROFILE_NAMES]).toEqual(Object.keys(QA_PROFILES));
+    expect(DEFAULT_QA_PROFILE_NAME).toBe('STANDARD');
+    expect(DEFAULT_QA_PROFILE).toEqual({ qaQuorum: QA_QUORUM, qaApprovalsRequired: 2 });
+    expect(MAX_QA_QUORUM).toBe(3);
+  });
+
+  it('names allowed profiles and refuses every other combination', () => {
+    expect(qaProfileName({ qaQuorum: 3, qaApprovalsRequired: 2 })).toBe('STANDARD');
+    expect(qaProfileName({ qaQuorum: 1, qaApprovalsRequired: 1 })).toBe('PILOT');
+    expect(assertQaProfile(QA_PROFILES.PILOT)).toBe('PILOT');
+    for (const [qaQuorum, qaApprovalsRequired] of [
+      [3, 3],
+      [3, 1],
+      [1, 0],
+      [2, 1],
+      [0, 0],
+    ] as const) {
+      expect(qaProfileName({ qaQuorum, qaApprovalsRequired })).toBeNull();
+      expect(() => assertQaProfile({ qaQuorum, qaApprovalsRequired })).toThrow(RangeError);
+    }
+  });
+});
+
+describe('item and campaign pricing (worst case per item)', () => {
   const pricing = {
     rewardPerItemWei: gDollars(100n),
     reviewerFeeWei: gDollars(10n),
     qaFeeWei: gDollars(5n),
   };
+  const standard = { ...pricing, ...QA_PROFILES.STANDARD };
+  const pilot = { ...pricing, ...QA_PROFILES.PILOT };
 
-  it('item max payout = reward + reviewer fee + 3 QA fees', () => {
-    expect(itemMaxPayout(pricing)).toBe(gDollars(125n));
+  it('worst case = reward + MAX_ATTEMPTS x (reviewer fee + quorum x QA fee)', () => {
+    expect(MAX_ATTEMPTS_PER_ITEM).toBe(2);
+    // The last attempt is reserved for a verified human.
+    expect(TRIAL_MAX_ATTEMPT).toBe(1);
+    // 100 + 2 x (10 + 3 x 5)
+    expect(itemMaxPayout(standard)).toBe(gDollars(150n));
+    // 100 + 2 x (10 + 1 x 5)
+    expect(itemMaxPayout(pilot)).toBe(gDollars(130n));
+    expect(itemMaxPayout({ ...standard, reviewerFeeWei: 0n, qaFeeWei: 0n })).toBe(gDollars(100n));
   });
 
   it('batch max payout scales with the item count', () => {
-    expect(batchMaxPayout(4, pricing)).toBe(gDollars(500n));
-    expect(batchMaxPayout(0, pricing)).toBe(0n);
-    expect(() => batchMaxPayout(-1, pricing)).toThrow(RangeError);
-    expect(() => batchMaxPayout(1.5, pricing)).toThrow(RangeError);
+    expect(batchMaxPayout(4, standard)).toBe(gDollars(600n));
+    expect(batchMaxPayout(4, pilot)).toBe(gDollars(520n));
+    expect(batchMaxPayout(0, standard)).toBe(0n);
+    expect(() => batchMaxPayout(-1, standard)).toThrow(RangeError);
+    expect(() => batchMaxPayout(1.5, standard)).toThrow(RangeError);
   });
 
-  it('campaign funding covers every item plus the platform fee', () => {
-    expect(campaignFundingRequired(10, pricing, 1_000)).toBe(gDollars(1_375n));
+  it('campaign funding covers every item at its worst case plus the platform fee', () => {
+    expect(campaignFundingRequired(10, standard, 1_000)).toBe(gDollars(1_650n));
+    expect(campaignFundingRequired(10, pilot, 1_000)).toBe(gDollars(1_430n));
   });
 
-  it('rejects negative prices', () => {
-    expect(() => itemMaxPayout({ ...pricing, qaFeeWei: -1n })).toThrow(RangeError);
-    expect(() => itemMaxPayout({ ...pricing, rewardPerItemWei: -1n })).toThrow(RangeError);
-    expect(() => itemMaxPayout({ ...pricing, reviewerFeeWei: -1n })).toThrow(RangeError);
+  it('rejects negative prices and unknown QA profiles', () => {
+    expect(() => itemMaxPayout({ ...standard, qaFeeWei: -1n })).toThrow(RangeError);
+    expect(() => itemMaxPayout({ ...standard, rewardPerItemWei: -1n })).toThrow(RangeError);
+    expect(() => itemMaxPayout({ ...standard, reviewerFeeWei: -1n })).toThrow(RangeError);
+    expect(() => assertPayTerms({ ...standard, qaQuorum: 5 })).toThrow(/QA profile/);
+    expect(() => batchMaxPayout(1, { ...pricing, qaQuorum: 2, qaApprovalsRequired: 2 })).toThrow(
+      RangeError,
+    );
   });
 });
 

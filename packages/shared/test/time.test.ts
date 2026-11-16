@@ -11,6 +11,8 @@ import {
   nowSeconds,
   SECONDS_PER_DAY,
   SECONDS_PER_WEEK,
+  SETTLE_WINDOW_END,
+  settlementWindow,
   SLASH_WINDOW_START,
   STAKE_DEPOSIT_WINDOW,
   STAKE_UNLOCK,
@@ -120,10 +122,24 @@ describe('Wallet Week math (Monday 12:00 UTC weeks, identical to WeekMath.sol)',
     expect(new Date(unlock * 1000).getUTCDay()).toBe(0);
   });
 
-  it('settlement opens on Saturday 12:00 UTC of the epoch week', () => {
-    expect(isSettlementOpen(2967, WEEK_2967 + SLASH_WINDOW_START - 1)).toBe(false);
-    expect(isSettlementOpen(2967, WEEK_2967 + SLASH_WINDOW_START)).toBe(true);
-    expect(new Date((WEEK_2967 + SLASH_WINDOW_START) * 1000).getUTCDay()).toBe(6);
+  it('a week is settleable from its Saturday 12:00 UTC until the Monday 12:00 a week after it ends', () => {
+    const window = settlementWindow(2967);
+    // The contract reports exactly these bounds in EpochNotSettleable(epochId, from, until).
+    expect(window).toEqual({
+      from: WEEK_2967 + SLASH_WINDOW_START,
+      until: WEEK_2967 + SETTLE_WINDOW_END,
+    });
+    expect(SETTLE_WINDOW_END).toBe(14 * SECONDS_PER_DAY);
+    expect(new Date(window.from * 1000).getUTCDay()).toBe(6);
+    expect(new Date(window.until * 1000).getUTCDay()).toBe(1);
+    expect(window.until).toBe(weekStart(2969));
+    expect(isSettlementOpen(2967, window.from - 1)).toBe(false);
+    expect(isSettlementOpen(2967, window.from)).toBe(true);
+    // Throughout the following week, as the previous week.
+    expect(isSettlementOpen(2967, weekStart(2968) + 3 * SECONDS_PER_DAY)).toBe(true);
+    expect(isSettlementOpen(2967, window.until - 1)).toBe(true);
+    expect(isSettlementOpen(2967, window.until)).toBe(false);
+    expect(isSettlementOpen(2967n, BigInt(window.until))).toBe(false);
   });
 
   it('workdays are Monday-Friday (dayIndex 0-4)', () => {

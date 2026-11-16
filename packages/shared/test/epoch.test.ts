@@ -80,6 +80,13 @@ describe('aggregateAllocations', () => {
     );
     const tree = buildEpochTree(2967, aggregate.allocations);
     expect(tree.total).toBe(perItem * 3n + FIVE_DAY_BONUS);
+    // settleEpoch's cap counts the bonus too: exactly maxEpochTotal settles, one wei more reverts.
+    const total = perItem * 3n + FIVE_DAY_BONUS;
+    const consistent = { aggregate, batchPayouts, bonusAmount: FIVE_DAY_BONUS };
+    expect(checkEpochConsistency({ ...consistent, maxEpochTotal: total })).toEqual([]);
+    expect(checkEpochConsistency({ ...consistent, maxEpochTotal: total - 1n })).toEqual([
+      `total ${total} exceeds maxEpochTotal ${total - 1n}`,
+    ]);
   });
 
   it('reports every inconsistency', () => {

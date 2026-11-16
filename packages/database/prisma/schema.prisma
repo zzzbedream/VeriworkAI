@@ -46,11 +46,23 @@ enum BatchStatus {
   CANCELLED
 }
 
+/// ACCEPTED / REJECTED are QA verdicts; VOIDED closes a submission without a verdict and pays nobody.
 enum SubmissionStatus {
   PENDING_REVIEW
   PENDING_QA
   ACCEPTED
   REJECTED
+  VOIDED
+}
+
+/// Why a submission was VOIDED.
+enum SubmissionVoidReason {
+  BATCH_FROZEN
+  BATCH_CANCELLED
+  CONFLICT_OF_INTEREST
+  /// Set only by the pay-rules upgrade, for submissions closed under the previous rules in a way these
+  /// rules cannot represent; the only rows the attempt / trial / reason CHECK constraints exempt.
+  LEGACY_RULES
 }
 
 enum EpochStatus {
@@ -150,24 +162,27 @@ model TrialSession {
 
 /// B2B campaign escrowed on-chain under `onchainId` (bytes32).
 model Campaign {
-  id               String         @id @default(uuid()) @db.Uuid
-  onchainId        String         @unique @db.VarChar(66)
-  sponsorAddress   String         @db.VarChar(42)
-  title            String         @db.VarChar(200)
-  description      String
-  taskType         TaskType
-  instructions     String
-  languages        String[]       @default([])
-  requiredModuleId Int?
-  rewardPerItemWei Decimal        @db.Decimal(78, 0)
-  reviewerFeeWei   Decimal        @db.Decimal(78, 0)
-  qaFeeWei         Decimal        @db.Decimal(78, 0)
-  itemsTarget      Int
-  status           CampaignStatus @default(DRAFT)
-  fundedWei        Decimal        @default(0) @db.Decimal(78, 0)
-  fundTxHash       String?        @db.VarChar(66)
-  createdAt        DateTime       @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime       @updatedAt @db.Timestamptz(3)
+  id                  String         @id @default(uuid()) @db.Uuid
+  onchainId           String         @unique @db.VarChar(66)
+  sponsorAddress      String         @db.VarChar(42)
+  title               String         @db.VarChar(200)
+  description         String
+  taskType            TaskType
+  instructions        String
+  languages           String[]       @default([])
+  requiredModuleId    Int?
+  rewardPerItemWei    Decimal        @db.Decimal(78, 0)
+  reviewerFeeWei      Decimal        @db.Decimal(78, 0)
+  qaFeeWei            Decimal        @db.Decimal(78, 0)
+  itemsTarget         Int
+  /// QA profile, fixed at creation: Standard 3 votes / 2 approvals or Pilot 1 / 1 (CHECK constraint).
+  qaQuorum            Int            @default(3)
+  qaApprovalsRequired Int            @default(2)
+  status              CampaignStatus @default(DRAFT)
+  fundedWei           Decimal        @default(0) @db.Decimal(78, 0)
+  fundTxHash          String?        @db.VarChar(66)
+  createdAt           DateTime       @default(now()) @db.Timestamptz(3)
+  updatedAt           DateTime       @updatedAt @db.Timestamptz(3)
 
   batches TaskBatch[]
 
@@ -226,31 +241,42 @@ model TaskItem {
   @@unique([batchId, position])
 }
 
-/// A human correction of an AI draft, then reviewed (score 1-5) and QA-voted (2 of 3).
+/// A human correction of an AI draft, then reviewed (score 1-5, always sent on to QA) and decided by the
+/// campaign's QA profile. Reviewer and QA are paid when their decision matches the QA verdict.
 model TaskSubmission {
-  id              String           @id @default(uuid()) @db.Uuid
-  itemId          String           @db.Uuid
-  batchId         String           @db.Uuid
-  workerAddress   String           @db.VarChar(42)
-  workerRoot      String?          @db.VarChar(42)
-  isTrial         Boolean          @default(false)
+  id              String                @id @default(uuid()) @db.Uuid
+  itemId          String                @db.Uuid
+  batchId         String                @db.Uuid
+  workerAddress   String                @db.VarChar(42)
+  workerRoot      String?               @db.VarChar(42)
+  isTrial         Boolean               @default(false)
   humanCorrection Json
-  status          SubmissionStatus @default(PENDING_REVIEW)
-  /// Equals `itemId` while the submission is not rejected: at most one live submission per item, so at
-  /// most one accepted submission per item and the batch payout never exceeds its reservation.
-  activeItemId    String?          @unique @db.Uuid
-  reviewerAddress String?          @db.VarChar(42)
-  reviewerRoot    String?          @db.VarChar(42)
+  status          SubmissionStatus      @default(PENDING_REVIEW)
+  /// Equals `itemId` while the submission is open or accepted: at most one live submission per item,
+  /// so at most one accepted submission per item.
+  activeItemId    String?               @unique @db.Uuid
+  /// 1-based attempt on the item; unique per item and at most 2 (MAX_ATTEMPTS_PER_ITEM), so with one
+  /// live submission per item the batch payout never exceeds its worst-case reservation. Only rows the
+  /// pay-rules upgrade voided as LEGACY_RULES may carry a higher number.
+  attempt         Int
+  reviewerAddress String?               @db.VarChar(42)
+  reviewerRoot    String?               @db.VarChar(42)
   reviewerScore   Int?
+  /// The reviewer's verdict, stored with the score (score >= 3 = accept).
+  reviewerApprove Boolean?
+  /// Required below score 3.
   reviewerNotes   String?
-  reviewedAt      DateTime?        @db.Timestamptz(3)
+  reviewedAt      DateTime?             @db.Timestamptz(3)
+  /// QA verdict: true for ACCEPTED, false for REJECTED, unset for open and VOIDED submissions.
   qaPassed        Boolean?
-  finalizedAt     DateTime?        @db.Timestamptz(3)
-  rewardWei       Decimal          @db.Decimal(78, 0)
+  voidReason      SubmissionVoidReason?
+  /// When the submission was accepted, rejected or voided.
+  finalizedAt     DateTime?             @db.Timestamptz(3)
+  rewardWei       Decimal               @db.Decimal(78, 0)
   epochId         Int?
-  claimTxHash     String?          @db.VarChar(66)
-  createdAt       DateTime         @default(now()) @db.Timestamptz(3)
-  updatedAt       DateTime         @updatedAt @db.Timestamptz(3)
+  claimTxHash     String?               @db.VarChar(66)
+  createdAt       DateTime              @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime              @updatedAt @db.Timestamptz(3)
 
   item   TaskItem  @relation(fields: [itemId], references: [id], onDelete: Restrict)
   batch  TaskBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
@@ -258,6 +284,7 @@ model TaskSubmission {
   votes  QaVote[]
 
   @@unique([itemId, workerAddress])
+  @@unique([itemId, attempt])
   @@index([status, createdAt])
   @@index([status, reviewedAt])
   @@index([status, finalizedAt])

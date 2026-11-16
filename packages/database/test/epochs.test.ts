@@ -22,7 +22,8 @@ import {
   saveEpochDraft,
   type EpochDraftInput,
 } from '../src/repositories/epochs';
-import { castQaVote, submitReview } from '../src/repositories/reviews';
+import { castQaVote } from '../src/repositories/qa-votes';
+import { submitReview } from '../src/repositories/reviews';
 import { recordWeeklyStake } from '../src/repositories/wallet-week';
 import { createSubmission } from '../src/repositories/submissions';
 import {
@@ -44,8 +45,21 @@ const TRIAL = addr(0x12);
 const REVIEWER = addr(0x20);
 const QAS = [addr(0x31), addr(0x32), addr(0x33)];
 
-/** A batch with one accepted verified submission and one accepted trial submission, at consensus. */
-async function consensusBatch(): Promise<BatchRecord> {
+/** How one submission of the fixture batch is reviewed and voted. */
+interface Decision {
+  readonly score: number;
+  readonly votes: readonly boolean[];
+}
+
+const UNANIMOUS_ACCEPT: Decision = { score: 4, votes: [true, true, true] };
+
+/**
+ * A batch at consensus with a verified submission and a trial submission, each decided as given
+ * (both accepted unanimously by default).
+ */
+async function consensusBatch(
+  decisions: { readonly verified?: Decision; readonly trial?: Decision } = {},
+): Promise<BatchRecord> {
   const { batch, itemIds } = await makePublishedBatch(prisma, { items: 2 });
   await seedAcceptedHistory(prisma, REVIEWER, 10);
   for (const qa of QAS) await seedAcceptedHistory(prisma, qa, 25);
@@ -67,21 +81,27 @@ async function consensusBatch(): Promise<BatchRecord> {
       correction: { labels: ['negative'] },
     }),
   ];
-  for (const submitted of submissions) {
+  const plan = [decisions.verified ?? UNANIMOUS_ACCEPT, decisions.trial ?? UNANIMOUS_ACCEPT];
+  for (const [index, submitted] of submissions.entries()) {
     if (!submitted.ok) throw new Error(submitted.reason);
+    const { score, votes } = plan[index] ?? UNANIMOUS_ACCEPT;
     await submitReview(prisma, {
       submissionId: submitted.submission.id,
       reviewerAddress: REVIEWER,
       reviewerRoot: REVIEWER,
-      score: 4,
+      score,
+      notes: score < 3 ? 'mislabelled' : undefined,
     });
-    for (const qa of QAS)
+    for (const [voter, qa] of QAS.entries()) {
+      const approve = votes[voter] ?? true;
       await castQaVote(prisma, {
         submissionId: submitted.submission.id,
         qaAddress: qa,
         qaRoot: qa,
-        approve: true,
+        approve,
+        reason: approve ? undefined : 'mislabelled',
       });
+    }
   }
   const frozen = await freezeBatchForConsensus(prisma, batch.id);
   if (!frozen.ok) throw new Error(frozen.reason);
@@ -182,6 +202,47 @@ describe('weekly settlement consistency', () => {
     }
     expect((await getBatch(prisma, batch.id))?.epochId).toBe(EPOCH);
     expect(await prisma.taskSubmission.count({ where: { epochId: EPOCH } })).toBe(2);
+  });
+
+  it('a QA rejection of verified work pays its aligned reviewer and voters, never its worker', async () => {
+    // The verified work is rejected 2-1 after a rejecting review: its reviewer and the two rejecting
+    // voters are paid for it, the approving voter and the worker are not.
+    const batch = await consensusBatch({ verified: { score: 2, votes: [false, false, true] } });
+    expect(batch.payoutWei).toBe(REWARD + REVIEWER_FEE * 2n + QA_FEE * 5n);
+    const draft = await draftFor(batch, FIVE_DAY_BONUS);
+    const saved = await saveEpochDraft(prisma, draft);
+    expect(saved.ok).toBe(true);
+    const allocations = await getEpochAllocations(prisma, EPOCH);
+    const amountOf = (wallet: string) =>
+      allocations.find((allocation) => allocation.walletAddress === wallet)?.amountWei ?? 0n;
+    expect(amountOf(WORKER)).toBe(FIVE_DAY_BONUS);
+    expect(amountOf(TRIAL)).toBe(REWARD);
+    expect(amountOf(REVIEWER)).toBe(REVIEWER_FEE * 2n);
+    expect(QAS.map(amountOf)).toEqual([QA_FEE * 2n, QA_FEE * 2n, QA_FEE]);
+    expect(allocations.reduce((sum, allocation) => sum + allocation.amountWei, 0n)).toBe(
+      (batch.payoutWei ?? 0n) + FIVE_DAY_BONUS,
+    );
+    // Only accepted work carries the epoch id (the worker claim marker).
+    expect(await prisma.taskSubmission.count({ where: { epochId: EPOCH } })).toBe(1);
+  });
+
+  it('rejected trial work pays nobody, whoever was aligned; Σ still == payout + bonus', async () => {
+    // Trial work (free wallets) rejected 2-1 after a rejecting review: aligned or not, nobody is paid.
+    const batch = await consensusBatch({ trial: { score: 1, votes: [false, false, true] } });
+    expect(batch.payoutWei).toBe(REWARD + REVIEWER_FEE + QA_FEE * 3n);
+    const saved = await saveEpochDraft(prisma, await draftFor(batch, FIVE_DAY_BONUS));
+    expect(saved.ok).toBe(true);
+    const allocations = await getEpochAllocations(prisma, EPOCH);
+    const amountOf = (wallet: string) =>
+      allocations.find((allocation) => allocation.walletAddress === wallet)?.amountWei ?? 0n;
+    expect(amountOf(TRIAL)).toBe(0n);
+    // Only the verified (accepted) submission's decisions are paid.
+    expect(amountOf(REVIEWER)).toBe(REVIEWER_FEE);
+    expect(QAS.map(amountOf)).toEqual([QA_FEE, QA_FEE, QA_FEE]);
+    expect(amountOf(WORKER)).toBe(REWARD + FIVE_DAY_BONUS);
+    expect(allocations.reduce((sum, allocation) => sum + allocation.amountWei, 0n)).toBe(
+      (batch.payoutWei ?? 0n) + FIVE_DAY_BONUS,
+    );
   });
 
   it('posts the epoch, settles its batches and records claims once', async () => {

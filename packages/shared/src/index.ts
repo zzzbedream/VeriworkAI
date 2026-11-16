@@ -15,6 +15,7 @@ export * from './merkle';
 export * from './epoch';
 export * from './enums';
 export * from './pipeline';
+export * from './pay-rules';
 export * from './wallet-week';
 export * from './task-content';
 export * from './telegram';

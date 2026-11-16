@@ -45,6 +45,11 @@ export const veriWorkCoreAbi = [
         "internalType": "uint256"
       },
       {
+        "name": "maxEpochTotal_",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "platformFeeBps_",
         "type": "uint16",
         "internalType": "uint16"
@@ -98,6 +103,19 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "function",
+    "name": "CAMPAIGN_FUNDING_LOCK",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "DEFAULT_ADMIN_ROLE",
     "inputs": [],
     "outputs": [
@@ -105,6 +123,19 @@ export const veriWorkCoreAbi = [
         "name": "",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "DISCRETIONARY_OUTFLOW_BPS",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "stateMutability": "view"
@@ -390,6 +421,11 @@ export const veriWorkCoreAbi = [
             "name": "feeBps",
             "type": "uint16",
             "internalType": "uint16"
+          },
+          {
+            "name": "lastFundedAt",
+            "type": "uint64",
+            "internalType": "uint64"
           }
         ]
       }
@@ -404,6 +440,19 @@ export const veriWorkCoreAbi = [
         "name": "batchId",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "cancelEpoch",
+    "inputs": [
+      {
+        "name": "epochId",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -580,7 +629,13 @@ export const veriWorkCoreAbi = [
   {
     "type": "function",
     "name": "depositStake",
-    "inputs": [],
+    "inputs": [
+      {
+        "name": "maxAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
     "outputs": [],
     "stateMutability": "nonpayable"
   },
@@ -588,6 +643,11 @@ export const veriWorkCoreAbi = [
     "type": "function",
     "name": "depositStakeWithPermit",
     "inputs": [
+      {
+        "name": "value",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
       {
         "name": "deadline",
         "type": "uint256",
@@ -688,6 +748,11 @@ export const veriWorkCoreAbi = [
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "maxFeeBps",
+        "type": "uint16",
+        "internalType": "uint16"
       }
     ],
     "outputs": [],
@@ -706,6 +771,11 @@ export const veriWorkCoreAbi = [
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "maxFeeBps",
+        "type": "uint16",
+        "internalType": "uint16"
       },
       {
         "name": "deadline",
@@ -926,6 +996,19 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "function",
+    "name": "maxEpochTotal",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "maxRollingOutflow",
     "inputs": [],
     "outputs": [
@@ -1046,6 +1129,11 @@ export const veriWorkCoreAbi = [
         "name": "moduleId",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "maxPrice",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -1057,6 +1145,11 @@ export const veriWorkCoreAbi = [
     "inputs": [
       {
         "name": "moduleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "value",
         "type": "uint256",
         "internalType": "uint256"
       },
@@ -1101,6 +1194,19 @@ export const veriWorkCoreAbi = [
     ],
     "outputs": [],
     "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "remainingDiscretionaryCapacity",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -1188,6 +1294,19 @@ export const veriWorkCoreAbi = [
       },
       {
         "name": "newClaimWindow",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setMaxEpochTotal",
+    "inputs": [
+      {
+        "name": "newMaxEpochTotal",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -1446,6 +1565,11 @@ export const veriWorkCoreAbi = [
         "name": "to",
         "type": "address",
         "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [],
@@ -1518,6 +1642,25 @@ export const veriWorkCoreAbi = [
         "name": "",
         "type": "bool",
         "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "trialWalletOf",
+    "inputs": [
+      {
+        "name": "root",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "wallet",
+        "type": "address",
+        "internalType": "address"
       }
     ],
     "stateMutability": "view"
@@ -1845,6 +1988,25 @@ export const veriWorkCoreAbi = [
       },
       {
         "name": "forfeited",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "EpochCancelled",
+    "inputs": [
+      {
+        "name": "epochId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
@@ -2398,6 +2560,37 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "event",
+    "name": "TrialRewardForfeited",
+    "inputs": [
+      {
+        "name": "epochId",
+        "type": "uint256",
+        "indexed": true,
+        "internalType": "uint256"
+      },
+      {
+        "name": "account",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "root",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "UbiContribution",
     "inputs": [
       {
@@ -2469,6 +2662,33 @@ export const veriWorkCoreAbi = [
     "type": "error",
     "name": "AlreadyStaked",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "CampaignFundsLocked",
+    "inputs": [
+      {
+        "name": "unlockAt",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "DiscretionaryOutflowLimitExceeded",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "available",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
@@ -2566,7 +2786,12 @@ export const veriWorkCoreAbi = [
         "internalType": "uint256"
       },
       {
-        "name": "settleableAt",
+        "name": "settleableFrom",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "settleableUntil",
         "type": "uint256",
         "internalType": "uint256"
       }
@@ -2596,12 +2821,23 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "error",
-    "name": "ExpectedPause",
-    "inputs": []
+    "name": "EpochTotalTooLarge",
+    "inputs": [
+      {
+        "name": "total",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "max",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
-    "name": "FeeOnTransferNotSupported",
+    "name": "ExpectedPause",
     "inputs": []
   },
   {
@@ -2628,6 +2864,22 @@ export const veriWorkCoreAbi = [
   {
     "type": "error",
     "name": "InsufficientRewardsPool",
+    "inputs": [
+      {
+        "name": "available",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "required",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InsufficientSurplus",
     "inputs": [
       {
         "name": "available",
@@ -2680,6 +2932,17 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "error",
+    "name": "InvalidRecipient",
+    "inputs": [
+      {
+        "name": "recipient",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidTrialAmount",
     "inputs": [
       {
@@ -2723,12 +2986,28 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "error",
-    "name": "NoClaimRequests",
-    "inputs": []
+    "name": "ModulePriceAboveMax",
+    "inputs": [
+      {
+        "name": "moduleId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "price",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxPrice",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
   },
   {
     "type": "error",
-    "name": "NoSurplus",
+    "name": "NoClaimRequests",
     "inputs": []
   },
   {
@@ -2850,6 +3129,38 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "error",
+    "name": "PlatformFeeAboveMax",
+    "inputs": [
+      {
+        "name": "feeBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxFeeBps",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ReceiverFeeNotSupported",
+    "inputs": [
+      {
+        "name": "received",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ReentrancyGuardReentrantCall",
     "inputs": []
   },
@@ -2898,6 +3209,22 @@ export const veriWorkCoreAbi = [
   },
   {
     "type": "error",
+    "name": "SenderFeeNotSupported",
+    "inputs": [
+      {
+        "name": "spent",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "SlashWindowClosed",
     "inputs": [
       {
@@ -2920,6 +3247,22 @@ export const veriWorkCoreAbi = [
         "name": "root",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "StakeAmountAboveMax",
+    "inputs": [
+      {
+        "name": "stakeAmount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxAmount",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   },

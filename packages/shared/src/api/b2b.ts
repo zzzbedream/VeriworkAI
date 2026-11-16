@@ -13,7 +13,13 @@ import {
   WeiStringSchema,
 } from '../schemas';
 import { DEFAULT_JSONL_LIMITS, TaskTypeSchema } from '../task-content';
-import { MODULE_IDS, TASK_REWARD_MAX, TASK_REWARD_MIN } from '../tokenomics';
+import {
+  MAX_QA_QUORUM,
+  MODULE_IDS,
+  QA_PROFILE_NAMES,
+  TASK_REWARD_MAX,
+  TASK_REWARD_MIN,
+} from '../tokenomics';
 import { TASK_JSON_MAX_BYTES } from './work';
 
 export const MAX_CAMPAIGN_ITEMS = 10_000;
@@ -32,7 +38,14 @@ const FeeSchema = WeiStringSchema.refine((value) => BigInt(value) <= MAX_REVIEW_
   error: 'Fee exceeds the maximum',
 });
 
-/** POST /api/b2b/campaigns (the sponsor is the session address). */
+/** QA profile of a campaign: STANDARD (3 votes, 2 approvals) or PILOT (1 vote, 1 approval). */
+export const QaProfileNameSchema = z.enum(QA_PROFILE_NAMES);
+
+/**
+ * POST /api/b2b/campaigns (the sponsor is the session address). Sponsor campaigns always use the
+ * Standard QA profile: there is no field to ask for Pilot (a single QA vote that nobody checks). Only
+ * an admin path may create a Pilot campaign, by passing `allowPilot` to the repository.
+ */
 export const CampaignCreateRequestSchema = z.strictObject({
   title: z.string().trim().min(3).max(200),
   description: z.string().trim().min(1).max(4_000),
@@ -65,9 +78,10 @@ export const CampaignViewSchema = z.strictObject({
   reviewerFeeWei: WeiStringSchema,
   qaFeeWei: WeiStringSchema,
   itemsTarget: z.int().min(1),
+  qaProfile: QaProfileNameSchema,
   status: CampaignStatusSchema,
   fundedWei: WeiStringSchema,
-  /** Escrow needed to reserve every target item (payout + platform fee). */
+  /** Escrow needed to reserve every target item (worst-case payout + platform fee). */
   requiredFundingWei: WeiStringSchema,
   fundTxHash: TxHashSchema.nullable(),
   createdAt: IsoDateTimeSchema,
@@ -76,9 +90,13 @@ export const CampaignViewSchema = z.strictObject({
 export const CampaignProgressSchema = z.strictObject({
   items: NonNegativeIntSchema,
   drafted: NonNegativeIntSchema,
+  /** Submissions by status: accepted / rejected by QA, still in review or QA, voided (unpaid). */
   accepted: NonNegativeIntSchema,
   rejected: NonNegativeIntSchema,
   inReview: NonNegativeIntSchema,
+  voided: NonNegativeIntSchema,
+  /** Items closed after their last attempt failed: excluded from the dataset. */
+  closedItems: NonNegativeIntSchema,
   batches: z.partialRecord(z.enum(BatchStatus), NonNegativeIntSchema),
 });
 
@@ -121,7 +139,7 @@ export const CampaignExportRowSchema = z.strictObject({
   aiDraft: boundedJson(TASK_JSON_MAX_BYTES).nullable(),
   finalOutput: boundedJson(TASK_JSON_MAX_BYTES),
   reviewerScore: z.int().min(1).max(5),
-  qaApprovals: z.int().min(0).max(3),
+  qaApprovals: z.int().min(0).max(MAX_QA_QUORUM),
   acceptedAt: IsoDateTimeSchema,
 });
 

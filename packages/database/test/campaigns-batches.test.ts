@@ -1,7 +1,6 @@
-import { batchMaxPayout, hashCanonicalJson } from '@veriwork/shared';
+import { batchMaxPayout, hashCanonicalJson, itemMaxPayout, QA_PROFILES } from '@veriwork/shared';
 import { describe, expect, it } from 'vitest';
 import {
-  buildBatchPayout,
   freezeBatchForConsensus,
   getBatchPayout,
   getBatchReadiness,
@@ -29,7 +28,8 @@ import {
   syncCampaignFunding,
 } from '../src/repositories/campaigns';
 import { insertOnchainEvents } from '../src/repositories/onchain-events';
-import { castQaVote, submitReview } from '../src/repositories/reviews';
+import { castQaVote } from '../src/repositories/qa-votes';
+import { submitReview } from '../src/repositories/reviews';
 import { createSubmission } from '../src/repositories/submissions';
 import {
   addr,
@@ -38,16 +38,22 @@ import {
   makeCampaign,
   makePublishedBatch,
   makeUser,
+  PILOT_CAMPAIGN,
   QA_FEE,
   REVIEWER_FEE,
   REWARD,
+  reviewAs,
   seedAcceptedHistory,
   SPONSOR,
+  submitWork,
   useTestDatabase,
+  voteAs,
 } from './helpers';
 
 const prisma = useTestDatabase();
 const PRICING = { rewardPerItemWei: REWARD, reviewerFeeWei: REVIEWER_FEE, qaFeeWei: QA_FEE };
+const STANDARD_TERMS = { ...PRICING, ...QA_PROFILES.STANDARD };
+const PILOT_TERMS = { ...PRICING, ...QA_PROFILES.PILOT };
 
 describe('campaigns', () => {
   it('creates, reads and lists campaigns with exact wei amounts', async () => {
@@ -59,6 +65,9 @@ describe('campaigns', () => {
       status: 'DRAFT',
       rewardPerItemWei: REWARD,
       fundedWei: 0n,
+      qaProfile: 'STANDARD',
+      qaQuorum: 3,
+      qaApprovalsRequired: 2,
     });
     expect((await getCampaign(prisma, campaign.id))?.title).toBe('Sentiment labels');
     expect((await getCampaignByOnchainId(prisma, hash32(0xabc)))?.id).toBe(campaign.id);
@@ -150,13 +159,43 @@ describe('campaign items (B2B upload -> DRAFT batches)', () => {
     if (!result.ok) return;
     expect(result.batches.map((batch) => batch.items).sort()).toEqual([1, 2, 2]);
     for (const batch of result.batches)
-      expect(batch.maxPayoutWei).toBe(batchMaxPayout(batch.items, PRICING));
+      expect(batch.maxPayoutWei).toBe(batchMaxPayout(batch.items, STANDARD_TERMS));
     const items = await listBatchItems(prisma, result.batches[0]?.id ?? '');
     expect(items.map((item) => item.position)).toEqual(items.map((_, index) => index));
     expect(await addCampaignItems(prisma, campaign.id, [LABEL_INPUT])).toEqual({
       ok: false,
       reason: 'EXCEEDS_TARGET',
     });
+  });
+
+  it('Pilot (one unchecked vote) needs the admin-only allowPilot option; by default it is refused', async () => {
+    const standard = await makeCampaign(prisma);
+    expect(standard).toMatchObject({ qaProfile: 'STANDARD', qaQuorum: 3, qaApprovalsRequired: 2 });
+    await expect(makeCampaign(prisma, { qaProfile: 'PILOT' })).rejects.toThrow(/allowPilot/);
+    await expect(makeCampaign(prisma, { qaProfile: 'PILOT', allowPilot: false })).rejects.toThrow(
+      /allowPilot/,
+    );
+    // The option only permits Pilot: a campaign is still Standard unless Pilot is asked for.
+    expect(await makeCampaign(prisma, { allowPilot: true })).toMatchObject({
+      qaProfile: 'STANDARD',
+    });
+    const pilot = await makeCampaign(prisma, PILOT_CAMPAIGN);
+    expect(pilot).toMatchObject({ qaProfile: 'PILOT', qaQuorum: 1, qaApprovalsRequired: 1 });
+    // A refused campaign writes nothing.
+    expect(await prisma.campaign.count()).toBe(3);
+  });
+
+  it('a Pilot campaign reserves its own worst case; the profile is one of the allowed pairs', async () => {
+    const pilot = await makeCampaign(prisma, PILOT_CAMPAIGN);
+    expect(pilot).toMatchObject({ qaProfile: 'PILOT', qaQuorum: 1, qaApprovalsRequired: 1 });
+    const result = await addCampaignItems(prisma, pilot.id, [LABEL_INPUT, LABEL_INPUT]);
+    expect(result.ok && result.batches[0]?.maxPayoutWei).toBe(batchMaxPayout(2, PILOT_TERMS));
+    // 2 items x (100 + 2 x (10 + 1 x 5)) G$ for Pilot vs 2 x (100 + 2 x (10 + 3 x 5)) for Standard.
+    expect(batchMaxPayout(2, PILOT_TERMS)).toBe(260n * 10n ** 18n);
+    expect(batchMaxPayout(2, STANDARD_TERMS)).toBe(300n * 10n ** 18n);
+    await expect(
+      prisma.campaign.update({ where: { id: pilot.id }, data: { qaQuorum: 3 } }),
+    ).rejects.toThrow(/Campaign_qaProfile_valid/);
   });
 
   it('never exceeds itemsTarget under concurrent uploads', async () => {
@@ -236,7 +275,7 @@ describe('batch state machine', () => {
     });
   });
 
-  it('cancelling closes open submissions', async () => {
+  it('cancelling voids open submissions (a cancelled batch pays nobody)', async () => {
     const { batch, itemIds } = await makePublishedBatch(prisma, { items: 1 });
     await makeUser(prisma, addr(0x10), addr(0x11));
     await createSubmission(prisma, {
@@ -250,7 +289,12 @@ describe('batch state machine', () => {
       txHash: hash32(0x12),
     });
     expect(cancelled).toMatchObject({ status: 'CANCELLED', cancelTxHash: hash32(0x12) });
-    expect((await prisma.taskSubmission.findFirstOrThrow()).status).toBe('REJECTED');
+    expect(await prisma.taskSubmission.findFirstOrThrow()).toMatchObject({
+      status: 'VOIDED',
+      voidReason: 'BATCH_CANCELLED',
+      activeItemId: null,
+      qaPassed: null,
+    });
   });
 
   it('stores AI drafts only when the hash matches, and only before the batch is published', async () => {
@@ -294,58 +338,108 @@ describe('batch state machine', () => {
   });
 });
 
-describe('consensus freeze and payout', () => {
-  it('buildBatchPayout pays accepted work only: reward + reviewer fee + one QA fee per vote', () => {
-    const batchId = hash32(7);
-    const votes = [addr(1), addr(2), addr(3)].map((qa, index) => ({
-      qaAddress: qa,
-      qaRoot: index === 0 ? null : qa,
-      approve: index !== 2,
-    }));
-    const accepted = [
-      {
-        itemId: 'b',
-        position: 1,
-        workerAddress: addr(9),
-        isTrial: true,
-        rewardWei: REWARD,
-        reviewerAddress: addr(8),
-        reviewerScore: 4,
-        output: { labels: ['x'] },
-        votes,
-      },
-      {
-        itemId: 'a',
-        position: 0,
-        workerAddress: addr(9),
-        isTrial: false,
-        rewardWei: REWARD,
-        reviewerAddress: null,
-        reviewerScore: null,
-        output: {},
-        votes: [],
-      },
-    ];
-    const payout = buildBatchPayout(
-      batchId,
-      { reviewerFeeWei: REVIEWER_FEE, qaFeeWei: QA_FEE },
-      accepted,
-    );
-    expect(payout.payoutWei).toBe(REWARD * 2n + REVIEWER_FEE + QA_FEE * 3n);
-    expect(payout.lines.every((line) => line.batchId === batchId)).toBe(true);
-    expect(payout.lines.filter((line) => line.isTrial === true)).toHaveLength(1);
-    expect(payout.acceptedItems).toBe(2);
-    const reordered = buildBatchPayout(
-      batchId,
-      { reviewerFeeWei: REVIEWER_FEE, qaFeeWei: QA_FEE },
-      [...accepted].reverse(),
-    );
-    expect(reordered.resultsHash).toBe(payout.resultsHash);
-    const free = buildBatchPayout(batchId, { reviewerFeeWei: 0n, qaFeeWei: 0n }, accepted);
-    expect(free.payoutWei).toBe(REWARD * 2n);
+describe('pay rules through the real pipeline', () => {
+  // Each attempt of an item is decided by other people: whoever took part in an item's first attempt
+  // may not decide (or work on) its retry.
+  const REVIEWERS = [addr(0x20), addr(0x21)];
+  const QA_PANELS = [
+    [addr(0x31), addr(0x32), addr(0x33)],
+    [addr(0x34), addr(0x35), addr(0x36)],
+  ];
+  const WORKERS = [addr(0x10), addr(0x12), addr(0x14)];
+
+  async function actors(): Promise<void> {
+    for (const reviewer of REVIEWERS) await seedAcceptedHistory(prisma, reviewer, 10);
+    for (const qa of QA_PANELS.flat()) await seedAcceptedHistory(prisma, qa, 25);
+    for (const [index, worker] of WORKERS.entries())
+      await makeUser(prisma, worker, addr(0x80 + index));
+  }
+
+  /** Submit, review and QA-vote one attempt (attempt 1 or 2: its own reviewer and QA panel). */
+  async function attempt(
+    itemId: string,
+    workerIndex: number,
+    score: number,
+    approvals: readonly boolean[],
+  ): Promise<void> {
+    const worker = WORKERS[workerIndex] ?? '';
+    const submission = await submitWork(prisma, itemId, worker, addr(0x80 + workerIndex));
+    const panel = submission.attempt - 1;
+    await reviewAs(prisma, submission.id, REVIEWERS[panel] ?? '', score);
+    await voteAs(prisma, submission.id, QA_PANELS[panel] ?? [], approvals);
+  }
+
+  it('pays every decision that matches the verdict, rejected attempts included, within the reservation', async () => {
+    const { batch, itemIds } = await makePublishedBatch(prisma, { items: 2 });
+    await actors();
+    const [first = '', second = ''] = itemIds;
+    // Item 0, the worst case: an honest rejection, then an honest acceptance (everyone aligned).
+    await attempt(first, 0, 1, [false, false, false]);
+    await attempt(first, 1, 5, [true, true, true]);
+    // Item 1: a rubber-stamping review then a contrarian one, a dissenting voter each time.
+    await attempt(second, 0, 4, [false, false, true]);
+    await attempt(second, 2, 2, [true, true, false]);
+    const readiness = await getBatchReadiness(prisma, batch.id);
+    expect(readiness).toMatchObject({ acceptedItems: 2, closedItems: 0, ready: true });
+    const frozen = await freezeBatchForConsensus(prisma, batch.id);
+    if (!frozen.ok) throw new Error(frozen.reason);
+    const byAccount = new Map<string, bigint>();
+    for (const line of frozen.payout.lines)
+      byAccount.set(line.account, (byAccount.get(line.account) ?? 0n) + line.amount);
+    const [first3 = [], second3 = []] = QA_PANELS;
+    expect(Object.fromEntries(byAccount)).toEqual({
+      // Item 0: both reviews aligned; item 1: neither (rubber stamp, then contrarian).
+      [REVIEWERS[0] ?? '']: REVIEWER_FEE,
+      [REVIEWERS[1] ?? '']: REVIEWER_FEE,
+      // Attempt-1 panel: all aligned on item 0, the dissenter (third voter) unpaid on item 1.
+      [first3[0] ?? '']: QA_FEE * 2n,
+      [first3[1] ?? '']: QA_FEE * 2n,
+      [first3[2] ?? '']: QA_FEE,
+      [second3[0] ?? '']: QA_FEE * 2n,
+      [second3[1] ?? '']: QA_FEE * 2n,
+      [second3[2] ?? '']: QA_FEE,
+      [WORKERS[1] ?? '']: REWARD,
+      [WORKERS[2] ?? '']: REWARD,
+    });
+    expect(frozen.payout.payoutWei).toBe(REWARD * 2n + REVIEWER_FEE * 2n + QA_FEE * 10n);
+    expect(frozen.payout).toMatchObject({ acceptedItems: 2, finalizedSubmissions: 4 });
+    expect(frozen.payout.payoutWei <= batch.maxPayoutWei).toBe(true);
+    expect(batch.maxPayoutWei).toBe(itemMaxPayout(STANDARD_TERMS) * 2n);
+    expect((await getBatchPayout(prisma, batch.id))?.resultsHash).toBe(frozen.payout.resultsHash);
   });
 
-  it('freezes, closes open work, pins payout + resultsHash and gates CONSENSUS_REACHED', async () => {
+  it('a batch is ready once every item is accepted or closed; open work waits for the deadline', async () => {
+    const { batch, itemIds } = await makePublishedBatch(prisma, { items: 2 });
+    await actors();
+    const [first = '', second = ''] = itemIds;
+    await attempt(first, 0, 2, [false, false, true]);
+    await attempt(first, 1, 2, [false, false, false]);
+    const pending = await submitWork(prisma, second, WORKERS[2] ?? '', addr(0x82));
+    expect(await getBatchReadiness(prisma, batch.id)).toMatchObject({
+      totalItems: 2,
+      acceptedItems: 0,
+      closedItems: 1,
+      openSubmissions: 1,
+      ready: false,
+    });
+    await reviewAs(prisma, pending.id, REVIEWERS[0] ?? '', 4);
+    await voteAs(prisma, pending.id, QA_PANELS[0] ?? [], [true, true, false]);
+    expect(await getBatchReadiness(prisma, batch.id)).toMatchObject({
+      acceptedItems: 1,
+      closedItems: 1,
+      openSubmissions: 0,
+      ready: true,
+    });
+    const frozen = await freezeBatchForConsensus(prisma, batch.id);
+    // Closed item: both reviews and the 5 aligned rejections are paid, no worker reward.
+    expect(frozen.ok && frozen.payout.payoutWei).toBe(
+      REVIEWER_FEE * 3n + QA_FEE * 5n + REWARD + QA_FEE * 2n,
+    );
+  });
+});
+
+describe('consensus freeze and payout', () => {
+  it('freezes, voids open work, pins payout + resultsHash and gates CONSENSUS_REACHED', async () => {
     const { batch, itemIds } = await makePublishedBatch(prisma, { items: 2 });
     const reviewer = addr(0x20);
     const qas = [addr(0x31), addr(0x32), addr(0x33)];
@@ -384,6 +478,7 @@ describe('consensus freeze and payout', () => {
     expect(readiness).toMatchObject({
       totalItems: 2,
       acceptedItems: 1,
+      closedItems: 0,
       openSubmissions: 1,
       deadlinePassed: false,
       frozen: false,
@@ -400,10 +495,13 @@ describe('consensus freeze and payout', () => {
       payoutWei: frozen.payout.payoutWei,
       resultsHash: frozen.payout.resultsHash,
     });
+    // Still open at the freeze: voided, distinguishable from a QA rejection, and paid to nobody.
     expect(
-      (await prisma.taskSubmission.findUniqueOrThrow({ where: { id: second.submission.id } }))
-        .status,
-    ).toBe('REJECTED');
+      await prisma.taskSubmission.findUniqueOrThrow({ where: { id: second.submission.id } }),
+    ).toMatchObject({ status: 'VOIDED', voidReason: 'BATCH_FROZEN', qaPassed: null });
+    expect(frozen.payout.lines.some((line) => line.account === addr(0x10))).toBe(true);
+    expect(frozen.payout.finalizedSubmissions).toBe(1);
+    expect((await getBatchReadiness(prisma, batch.id))?.frozen).toBe(true);
     const again = await freezeBatchForConsensus(prisma, batch.id);
     expect(again.ok && again.payout.resultsHash).toBe(frozen.payout.resultsHash);
     expect((await getBatchPayout(prisma, batch.id))?.payoutWei).toBe(frozen.payout.payoutWei);
@@ -442,6 +540,34 @@ describe('consensus freeze and payout', () => {
     expect(await getBatchPayout(prisma, '00000000-0000-4000-8000-000000000000')).toBeNull();
   });
 
+  it('a frozen payout is never overwritten: a re-run that no longer produces it throws', async () => {
+    const { batch, itemIds } = await makePublishedBatch(prisma, { items: 1 });
+    await seedAcceptedHistory(prisma, addr(0x20), 10);
+    const qas = [addr(0x31), addr(0x32), addr(0x33)];
+    for (const qa of qas) await seedAcceptedHistory(prisma, qa, 25);
+    await makeUser(prisma, addr(0x10), addr(0x11));
+    const submission = await submitWork(prisma, itemIds[0] ?? '', addr(0x10), addr(0x11));
+    await reviewAs(prisma, submission.id, addr(0x20), 4);
+    await voteAs(prisma, submission.id, qas, [true, true, true]);
+    const frozen = await freezeBatchForConsensus(prisma, batch.id);
+    if (!frozen.ok) throw new Error(frozen.reason);
+    // Re-runs return the pinned values, exactly (no stray fields).
+    const again = await freezeBatchForConsensus(prisma, batch.id);
+    expect(again).toEqual(frozen);
+    // A payout pinned by other rules (e.g. frozen before an upgrade) differs from what the rows produce.
+    await prisma.taskBatch.update({ where: { id: batch.id }, data: { payoutWei: '1' } });
+    await expect(freezeBatchForConsensus(prisma, batch.id)).rejects.toThrow(/frozen payout/);
+    await prisma.taskBatch.update({
+      where: { id: batch.id },
+      data: { payoutWei: frozen.payout.payoutWei.toString(), resultsHash: hash32(7) },
+    });
+    await expect(freezeBatchForConsensus(prisma, batch.id)).rejects.toThrow(/frozen payout/);
+    expect(await getBatch(prisma, batch.id)).toMatchObject({
+      payoutWei: frozen.payout.payoutWei,
+      resultsHash: hash32(7),
+    });
+  });
+
   it('progress and export of the accepted dataset', async () => {
     const { campaign, itemIds } = await makePublishedBatch(prisma, { items: 2 });
     const reviewer = addr(0x20);
@@ -472,7 +598,7 @@ describe('consensus freeze and payout', () => {
         reason: 'n/a',
       });
     }
-    await createSubmission(prisma, {
+    const open = await createSubmission(prisma, {
       itemId: itemIds[1] ?? '',
       workerAddress: addr(0x10),
       workerRoot: addr(0x11),
@@ -485,7 +611,20 @@ describe('consensus freeze and payout', () => {
       accepted: 1,
       rejected: 0,
       inReview: 1,
+      voided: 0,
+      closedItems: 0,
       batches: { IN_HUMAN_REVIEW: 1 },
+    });
+    // Accepted work is not exported before its batch's payout is committed (consensus): a batch can
+    // still be cancelled, which releases the whole reservation.
+    expect(await exportAcceptedItems(prisma, campaign.id)).toEqual([]);
+    expect(open.ok).toBe(true);
+    const batchId = open.ok ? open.submission.batchId : '';
+    const frozen = await freezeBatchForConsensus(prisma, batchId);
+    if (!frozen.ok) throw new Error(frozen.reason);
+    await transitionBatch(prisma, batchId, 'IN_HUMAN_REVIEW', 'CONSENSUS_REACHED', {
+      payoutWei: frozen.payout.payoutWei,
+      resultsHash: frozen.payout.resultsHash,
     });
     const rows = await exportAcceptedItems(prisma, campaign.id);
     expect(rows).toHaveLength(1);
@@ -495,6 +634,15 @@ describe('consensus freeze and payout', () => {
       finalOutput: { labels: ['negative'] },
       reviewerScore: 4,
       qaApprovals: 2,
+    });
+    // Cancelled after all (operator only): nothing of that batch is exported any more.
+    await transitionBatch(prisma, batchId, 'CONSENSUS_REACHED', 'CANCELLED');
+    expect(await exportAcceptedItems(prisma, campaign.id)).toEqual([]);
+    expect(await getCampaignProgress(prisma, campaign.id)).toMatchObject({
+      accepted: 1,
+      inReview: 0,
+      voided: 1,
+      batches: { CANCELLED: 1 },
     });
   });
 });

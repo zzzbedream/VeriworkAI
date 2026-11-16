@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SubmissionStatus } from '../pipeline';
+import { isReviewReasonRequired, SubmissionStatus, SubmissionVoidReason } from '../pipeline';
 import {
   boundedJson,
   IsoDateTimeSchema,
@@ -16,6 +16,7 @@ export const TASK_JSON_MAX_BYTES = 32_000;
 const TaskJsonSchema = boundedJson(TASK_JSON_MAX_BYTES);
 
 export const SubmissionStatusSchema = z.enum(SubmissionStatus);
+export const SubmissionVoidReasonSchema = z.enum(SubmissionVoidReason);
 export const QaOutcomeSchema = z.enum(['PENDING', 'ACCEPTED', 'REJECTED']);
 
 /** An item served to a worker: instructions, input and the AI contributor's draft to correct. */
@@ -79,22 +80,43 @@ export const NextReviewResponseSchema = z.strictObject({
 /** POST /api/review/{submissionId} and POST /api/qa/{submissionId} */
 export const SubmissionParamsSchema = z.strictObject({ submissionId: UuidSchema });
 
-export const ReviewRequestSchema = z.strictObject({
-  score: z.int().min(REVIEW_SCORE_MIN).max(REVIEW_SCORE_MAX),
-  notes: z.string().trim().max(1_000).optional(),
-});
+/**
+ * Optional free text, trimmed; blank text (a form's empty textarea) counts as absent, so it never
+ * fails validation on its own and never satisfies a required reason.
+ */
+function optionalText(maxLength: number) {
+  return z
+    .string()
+    .trim()
+    .max(maxLength)
+    .transform((text) => (text === '' ? undefined : text))
+    .optional();
+}
+
+/**
+ * Score 1-5 (3 or more = accept). A score below 3 must say why. Whatever the score the submission
+ * goes to QA, and the reviewer is paid when the verdict matches the QA consensus.
+ */
+export const ReviewRequestSchema = z
+  .strictObject({
+    score: z.int().min(REVIEW_SCORE_MIN).max(REVIEW_SCORE_MAX),
+    notes: optionalText(1_000),
+  })
+  .refine((review) => !isReviewReasonRequired(review.score) || review.notes !== undefined, {
+    error: 'A reason is required for a score below 3',
+    path: ['notes'],
+  });
 
 export const ReviewResponseSchema = z.strictObject({
   submissionId: UuidSchema,
   status: SubmissionStatusSchema,
 });
 
-/** A submission shown to a QA voter, with the reviewer's assessment. */
-export const QaItemViewSchema = ReviewItemViewSchema.extend({
-  reviewerScore: z.int().min(REVIEW_SCORE_MIN).max(REVIEW_SCORE_MAX),
-  reviewerNotes: z.string().nullable(),
-  votesCast: z.int().min(0).max(2),
-});
+/**
+ * A submission shown to a QA voter. Voting is blind: no reviewer score, notes or verdict, no other
+ * votes or vote count, and no worker identity (the strict schema refuses every extra field).
+ */
+export const QaItemViewSchema = ReviewItemViewSchema;
 
 /** GET /api/qa/next */
 export const NextQaResponseSchema = z.strictObject({
@@ -105,18 +127,20 @@ export const NextQaResponseSchema = z.strictObject({
 export const QaVoteRequestSchema = z
   .strictObject({
     approve: z.boolean(),
-    reason: z.string().trim().min(1).max(500).optional(),
+    reason: optionalText(500),
   })
   .refine((vote) => vote.approve || vote.reason !== undefined, {
     error: 'A reason is required to reject',
     path: ['reason'],
   });
 
+/**
+ * The vote was recorded. Nothing else: the vote count, the outcome or the submission's status would
+ * tell the voter how the others voted (voting stays blind after the vote too).
+ */
 export const QaVoteResponseSchema = z.strictObject({
   submissionId: UuidSchema,
-  votes: z.int().min(1).max(3),
-  outcome: QaOutcomeSchema,
-  status: SubmissionStatusSchema,
+  recorded: z.literal(true),
 });
 
 export type TaskItemView = z.infer<typeof TaskItemViewSchema>;

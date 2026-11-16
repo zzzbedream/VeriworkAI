@@ -1,8 +1,15 @@
 import { batchMaxPayout, type Hex } from '@veriwork/shared';
 import { bytes32, randomBytes32, weiInput } from '../convert';
 import type { DbClient } from '../db-types';
-import type { BatchStatus, Prisma, PrismaClient } from '../generated/prisma/client';
+import type {
+  BatchStatus,
+  Prisma,
+  PrismaClient,
+  SubmissionStatus,
+} from '../generated/prisma/client';
+import { mapSequential } from '../sequential';
 import { toCampaignRecord, type CampaignRecord } from './campaigns';
+import { countItemResolution } from './item-resolution';
 
 export interface CreatedBatch {
   readonly id: string;
@@ -45,8 +52,8 @@ async function createDraftBatch(
 
 /**
  * B2B upload: stores validated task inputs as DRAFT batches (not yet opened on-chain), each with its
- * `maxPayoutWei` reservation. The campaign row is locked so concurrent uploads cannot exceed
- * `itemsTarget`.
+ * worst-case `maxPayoutWei` reservation (prices and QA profile of the campaign). The campaign row is
+ * locked so concurrent uploads cannot exceed `itemsTarget`.
  */
 export async function addCampaignItems(
   prisma: PrismaClient,
@@ -71,8 +78,8 @@ export async function addCampaignItems(
     if (existing + inputs.length > campaign.itemsTarget)
       return { ok: false, reason: 'EXCEEDS_TARGET' } as const;
     const record = toCampaignRecord(campaign);
-    const batches = await Promise.all(
-      chunk(inputs, batchSize).map((items) => createDraftBatch(tx, record, items)),
+    const batches = await mapSequential(chunk(inputs, batchSize), (items) =>
+      createDraftBatch(tx, record, items),
     );
     return { ok: true, inserted: inputs.length, batches } as const;
   });
@@ -81,9 +88,13 @@ export async function addCampaignItems(
 export interface CampaignProgress {
   readonly items: number;
   readonly drafted: number;
+  /** Submissions accepted / rejected by QA, still in review or QA, and voided (no verdict, unpaid). */
   readonly accepted: number;
   readonly rejected: number;
   readonly inReview: number;
+  readonly voided: number;
+  /** Items closed after their last attempt failed: excluded from the dataset. */
+  readonly closedItems: number;
   readonly batches: Partial<Readonly<Record<BatchStatus, number>>>;
 }
 
@@ -92,18 +103,24 @@ export async function getCampaignProgress(
   campaignId: string,
 ): Promise<CampaignProgress> {
   const inCampaign = { batch: { campaignId } };
-  const [items, drafted, accepted, rejected, inReview, batches] = await Promise.all([
-    db.taskItem.count({ where: inCampaign }),
+  const [drafted, byStatus, resolution, batches] = await Promise.all([
     db.taskItem.count({ where: { ...inCampaign, aiDraftedAt: { not: null } } }),
-    db.taskSubmission.count({ where: { ...inCampaign, status: 'ACCEPTED' } }),
-    db.taskSubmission.count({ where: { ...inCampaign, status: 'REJECTED' } }),
-    db.taskSubmission.count({
-      where: { ...inCampaign, status: { in: ['PENDING_REVIEW', 'PENDING_QA'] } },
-    }),
+    db.taskSubmission.groupBy({ by: ['status'], where: inCampaign, _count: { _all: true } }),
+    countItemResolution(db, { campaignId }),
     db.taskBatch.groupBy({ by: ['status'], where: { campaignId }, _count: { _all: true } }),
   ]);
-  const byStatus = Object.fromEntries(batches.map((group) => [group.status, group._count._all]));
-  return { items, drafted, accepted, rejected, inReview, batches: byStatus };
+  const submissions = (status: SubmissionStatus): number =>
+    byStatus.find((group) => group.status === status)?._count._all ?? 0;
+  return {
+    items: resolution.totalItems,
+    drafted,
+    accepted: submissions('ACCEPTED'),
+    rejected: submissions('REJECTED'),
+    inReview: submissions('PENDING_REVIEW') + submissions('PENDING_QA'),
+    voided: submissions('VOIDED'),
+    closedItems: resolution.closedItems,
+    batches: Object.fromEntries(batches.map((group) => [group.status, group._count._all])),
+  };
 }
 
 export interface ExportRow {
@@ -117,13 +134,23 @@ export interface ExportRow {
   readonly acceptedAt: Date;
 }
 
+/**
+ * Batches whose accepted data the sponsor may download: the payout is committed on-chain
+ * (`markConsensus`). Work of a batch still in review, or cancelled, is never exported: cancelling
+ * releases the whole reservation, so that data was not paid for.
+ */
+const EXPORTABLE_BATCH_STATUSES = ['CONSENSUS_REACHED', 'SETTLED_ON_CHAIN'] as const;
+
 /** Accepted dataset of a campaign, in batch / item order (one row per accepted item). */
 export async function exportAcceptedItems(
   db: DbClient,
   campaignId: string,
 ): Promise<readonly ExportRow[]> {
   const submissions = await db.taskSubmission.findMany({
-    where: { status: 'ACCEPTED', batch: { campaignId } },
+    where: {
+      status: 'ACCEPTED',
+      batch: { campaignId, status: { in: [...EXPORTABLE_BATCH_STATUSES] } },
+    },
     include: { item: true, votes: true, batch: { select: { createdAt: true } } },
     orderBy: [{ batch: { createdAt: 'asc' } }, { item: { position: 'asc' } }],
   });

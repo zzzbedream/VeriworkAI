@@ -9,6 +9,7 @@ import {
   apiResponseSchema,
   AuthVerifyRequestSchema,
   CampaignCreateRequestSchema,
+  CampaignProgressSchema,
   CampaignViewSchema,
   ClaimsResponseSchema,
   EngagementSignatureRequestSchema,
@@ -20,10 +21,13 @@ import {
   MetricsQuerySchema,
   NextQaResponseSchema,
   QaVoteRequestSchema,
+  QaVoteResponseSchema,
   resolveMetricsRange,
   ReviewRequestSchema,
   routePath,
   SessionClaimsSchema,
+  SubmissionStatusSchema,
+  SubmissionVoidReasonSchema,
   SubmitTaskRequestSchema,
   TelegramLinkResponseSchema,
   trialSummary,
@@ -170,6 +174,29 @@ describe('request schemas', () => {
     ).toBe(false);
     expect(ReviewRequestSchema.safeParse({ score: 3 }).success).toBe(true);
     expect(ReviewRequestSchema.safeParse({ score: 6 }).success).toBe(false);
+    // A score below 3 (reject) needs a reason; blank reasons do not count.
+    expect(ReviewRequestSchema.safeParse({ score: 2 }).success).toBe(false);
+    expect(ReviewRequestSchema.safeParse({ score: 1, notes: '   ' }).success).toBe(false);
+    expect(ReviewRequestSchema.parse({ score: 1, notes: ' wrong label ' })).toEqual({
+      score: 1,
+      notes: 'wrong label',
+    });
+    const missingReason = ReviewRequestSchema.safeParse({ score: 2 });
+    expect(missingReason.error?.issues[0]?.path).toEqual(['notes']);
+    // A form that always sends its (empty) textarea: blank notes are simply absent.
+    for (const notes of ['', '   ']) {
+      expect(ReviewRequestSchema.parse({ score: 4, notes })).toEqual({ score: 4 });
+      expect(ReviewRequestSchema.safeParse({ score: 2, notes }).error?.issues[0]?.path).toEqual([
+        'notes',
+      ]);
+      expect(QaVoteRequestSchema.parse({ approve: true, reason: notes })).toEqual({
+        approve: true,
+      });
+      expect(QaVoteRequestSchema.safeParse({ approve: false, reason: notes }).success).toBe(false);
+    }
+    expect(ReviewRequestSchema.safeParse({ score: 4, notes: 'x'.repeat(1_001) }).success).toBe(
+      false,
+    );
     expect(QaVoteRequestSchema.safeParse({ approve: true }).success).toBe(true);
     expect(QaVoteRequestSchema.safeParse({ approve: false }).success).toBe(false);
     expect(QaVoteRequestSchema.safeParse({ approve: false, reason: 'wrong label' }).success).toBe(
@@ -190,7 +217,11 @@ describe('request schemas', () => {
       qaFeeWei: gDollars(2n).toString(),
       itemsTarget: 30,
     };
-    expect(CampaignCreateRequestSchema.safeParse(valid).success).toBe(true);
+    expect(CampaignCreateRequestSchema.parse(valid)).toEqual(valid);
+    // Sponsors cannot ask for the Pilot profile (one unchecked vote): only an admin path allows it.
+    for (const extra of [{ qaProfile: 'PILOT' }, { qaProfile: 'STANDARD' }, { allowPilot: true }]) {
+      expect(CampaignCreateRequestSchema.safeParse({ ...valid, ...extra }).success).toBe(false);
+    }
     expect(
       CampaignCreateRequestSchema.safeParse({ ...valid, requiredModuleId: null }).success,
     ).toBe(true);
@@ -320,16 +351,31 @@ describe('response schemas', () => {
         aiDraft: null,
         correction: { labels: ['a'] },
         submittedAt: ISO,
-        reviewerScore: 4,
-        reviewerNotes: null,
-        votesCast: 1,
       },
     };
     expect(NextQaResponseSchema.parse(qa)).toEqual(qa);
-    expect(
-      NextQaResponseSchema.safeParse({ submission: { ...qa.submission, workerAddress: ADDRESS } })
-        .success,
-    ).toBe(false);
+    // Blind QA: the worker, the reviewer's verdict and the other votes never reach the voter.
+    for (const leak of [
+      { workerAddress: ADDRESS },
+      { reviewerScore: 4 },
+      { reviewerNotes: 'looks fine' },
+      { votesCast: 1 },
+    ]) {
+      expect(
+        NextQaResponseSchema.safeParse({ submission: { ...qa.submission, ...leak } }).success,
+      ).toBe(false);
+    }
+    // After the vote too: only "recorded", never the count, the outcome or the status (each would
+    // reveal the other votes to the voter who completed the quorum).
+    expect(QaVoteResponseSchema.parse({ submissionId: UUID, recorded: true })).toEqual({
+      submissionId: UUID,
+      recorded: true,
+    });
+    for (const leak of [{ votes: 1 }, { outcome: 'REJECTED' }, { status: 'REJECTED' }]) {
+      expect(
+        QaVoteResponseSchema.safeParse({ submissionId: UUID, recorded: true, ...leak }).success,
+      ).toBe(false);
+    }
   });
 
   it('campaign view, telegram link and gas top-up', () => {
@@ -347,6 +393,7 @@ describe('response schemas', () => {
       reviewerFeeWei: '0',
       qaFeeWei: '0',
       itemsTarget: 1,
+      qaProfile: 'PILOT',
       status: 'DRAFT',
       fundedWei: '0',
       requiredFundingWei: '1',
@@ -354,6 +401,21 @@ describe('response schemas', () => {
       createdAt: ISO,
     };
     expect(CampaignViewSchema.parse(campaign)).toEqual(campaign);
+    const progress = {
+      items: 3,
+      drafted: 3,
+      accepted: 1,
+      rejected: 2,
+      inReview: 0,
+      voided: 1,
+      closedItems: 1,
+      batches: { IN_HUMAN_REVIEW: 1 },
+    };
+    expect(CampaignProgressSchema.parse(progress)).toEqual(progress);
+    expect(SubmissionStatusSchema.safeParse('VOIDED').success).toBe(true);
+    expect(SubmissionVoidReasonSchema.safeParse('BATCH_FROZEN').success).toBe(true);
+    expect(SubmissionVoidReasonSchema.safeParse('LEGACY_RULES').success).toBe(true);
+    expect(SubmissionVoidReasonSchema.safeParse('EXPIRED').success).toBe(false);
     expect(
       TelegramLinkResponseSchema.safeParse({ url: 'https://t.me/Bot?start=abc', expiresAt: ISO })
         .success,

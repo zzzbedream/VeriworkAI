@@ -8,6 +8,7 @@ import {
   listUsers,
   recordIdentityCheck,
   revokeRole,
+  setRoleAsAdmin,
   updateUserProfile,
 } from '../src/repositories/users';
 import { addr, useTestDatabase } from './helpers';
@@ -118,6 +119,53 @@ describe('users', () => {
     expect(await revokeRole(prisma, addr(1), 'REVIEWER')).toBe(true);
     expect(await revokeRole(prisma, addr(1), 'REVIEWER')).toBe(false);
     expect((await getUser(prisma, addr(1)))?.roles).toEqual(['WORKER', 'QA']);
+  });
+
+  it('admin role changes are checked against the actor in the same statement', async () => {
+    const admin = addr(0xad);
+    for (const wallet of [admin, addr(1), addr(2)]) await ensureUser(prisma, wallet);
+    await grantRole(prisma, admin, 'ADMIN');
+    const change = { adminAddress: admin, walletAddress: addr(1), role: 'REVIEWER' } as const;
+    expect(await setRoleAsAdmin(prisma, { ...change, granted: true })).toMatchObject({
+      ok: true,
+      changed: true,
+      user: { roles: ['WORKER', 'REVIEWER'] },
+    });
+    expect(await setRoleAsAdmin(prisma, { ...change, granted: true })).toMatchObject({
+      ok: true,
+      changed: false,
+    });
+    // A non-admin (here: a plain worker) cannot change roles, and nothing is written.
+    expect(
+      await setRoleAsAdmin(prisma, {
+        ...change,
+        adminAddress: addr(2),
+        role: 'QA',
+        granted: true,
+      }),
+    ).toEqual({ ok: false, reason: 'NOT_ADMIN' });
+    expect((await getUser(prisma, addr(1)))?.roles).toEqual(['WORKER', 'REVIEWER']);
+    expect(
+      await setRoleAsAdmin(prisma, { ...change, walletAddress: addr(9), granted: true }),
+    ).toEqual({ ok: false, reason: 'UNKNOWN_USER' });
+    expect(await setRoleAsAdmin(prisma, { ...change, granted: false })).toMatchObject({
+      ok: true,
+      changed: true,
+      user: { roles: ['WORKER'] },
+    });
+    // An admin revoking its own ADMIN role: applied, and reported as applied.
+    expect(
+      await setRoleAsAdmin(prisma, {
+        adminAddress: admin,
+        walletAddress: admin,
+        role: 'ADMIN',
+        granted: false,
+      }),
+    ).toMatchObject({ ok: true, changed: true, user: { roles: ['WORKER'] } });
+    expect(await setRoleAsAdmin(prisma, { ...change, granted: true })).toEqual({
+      ok: false,
+      reason: 'NOT_ADMIN',
+    });
   });
 
   it('lists users with keyset pagination and filters', async () => {

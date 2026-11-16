@@ -81,7 +81,13 @@ export class DeploymentConfigError extends Error {
  */
 export const KNOWN_DEPLOYMENTS: Readonly<
   Partial<Record<SupportedChainId, { readonly core: Address; readonly agentRegistry: Address }>>
-> = {};
+> = {
+  // v2, deployed at block 82930770 (deployments/42220.json).
+  [CELO_CHAIN_ID]: {
+    core: '0xeC9Ea648d5F8C3bcb5E26Bd155dCf27Ed4B51c25',
+    agentRegistry: '0x7D251CB1C4321cEff128F265CA17a2F65F85F05E',
+  },
+};
 
 type AddressLookup =
   | { readonly kind: 'found'; readonly address: Address }

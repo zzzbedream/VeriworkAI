@@ -9,7 +9,7 @@ import {
 import { z } from 'zod';
 import { lower, lowerOrNull } from '../convert';
 import type { DbClient } from '../db-types';
-import type { Role, User } from '../generated/prisma/client';
+import { Prisma, type Role, type User } from '../generated/prisma/client';
 
 export interface UserRecord {
   readonly walletAddress: Address;
@@ -143,7 +143,10 @@ export async function recordIdentityCheck(
   return toUserRecord(await db.user.findUniqueOrThrow({ where: { walletAddress: wallet } }));
 }
 
-/** Adds a role atomically (idempotent). */
+/**
+ * Adds a role atomically (idempotent). Unchecked: for the seed (first ADMIN) and jobs; an admin
+ * action from the API goes through `setRoleAsAdmin`.
+ */
 export async function grantRole(db: DbClient, walletAddress: string, role: Role): Promise<boolean> {
   const updated = await db.$executeRaw`
     UPDATE "User" SET "roles" = array_append("roles", ${role}::"Role"), "updatedAt" = now()
@@ -151,7 +154,7 @@ export async function grantRole(db: DbClient, walletAddress: string, role: Role)
   return updated === 1;
 }
 
-/** Removes a role atomically (idempotent). */
+/** Removes a role atomically (idempotent). Unchecked, like `grantRole`. */
 export async function revokeRole(
   db: DbClient,
   walletAddress: string,
@@ -161,6 +164,52 @@ export async function revokeRole(
     UPDATE "User" SET "roles" = array_remove("roles", ${role}::"Role"), "updatedAt" = now()
     WHERE "walletAddress" = ${lower(walletAddress)} AND ${role}::"Role" = ANY("roles")`;
   return updated === 1;
+}
+
+export interface AdminRoleChange {
+  /** Wallet of the admin performing the change (the session address). */
+  readonly adminAddress: string;
+  readonly walletAddress: string;
+  readonly role: Role;
+  /** `true` grants the role, `false` revokes it. */
+  readonly granted: boolean;
+}
+
+export type AdminRoleChangeResult =
+  | { readonly ok: true; readonly changed: boolean; readonly user: UserRecord }
+  | { readonly ok: false; readonly reason: 'NOT_ADMIN' | 'UNKNOWN_USER' };
+
+/**
+ * Admin action, e.g. granting REVIEWER / QA to bootstrap the review pipeline (at launch nobody has
+ * the accepted-task history). The actor's ADMIN role is checked in the same statement as the change,
+ * so a revoked admin cannot slip one through. Idempotent: `changed: false` when nothing changed.
+ * Callers must still authenticate the actor (session) before passing `adminAddress`.
+ */
+export async function setRoleAsAdmin(
+  db: DbClient,
+  change: AdminRoleChange,
+): Promise<AdminRoleChangeResult> {
+  const admin = lower(change.adminAddress);
+  const wallet = lower(change.walletAddress);
+  const isAdmin = Prisma.sql`EXISTS (SELECT 1 FROM "User" a
+    WHERE a."walletAddress" = ${admin} AND 'ADMIN'::"Role" = ANY(a."roles"))`;
+  const updated = change.granted
+    ? await db.$executeRaw`
+        UPDATE "User" SET "roles" = array_append("roles", ${change.role}::"Role"), "updatedAt" = now()
+        WHERE "walletAddress" = ${wallet} AND NOT (${change.role}::"Role" = ANY("roles")) AND ${isAdmin}`
+    : await db.$executeRaw`
+        UPDATE "User" SET "roles" = array_remove("roles", ${change.role}::"Role"), "updatedAt" = now()
+        WHERE "walletAddress" = ${wallet} AND ${change.role}::"Role" = ANY("roles") AND ${isAdmin}`;
+  if (updated === 1) {
+    const user = await db.user.findUniqueOrThrow({ where: { walletAddress: wallet } });
+    return { ok: true, changed: true, user: toUserRecord(user) };
+  }
+  // Nothing changed: tell why (not an admin, unknown wallet, or already in the requested state).
+  const actor = await getUser(db, admin);
+  if (actor === null || !actor.roles.includes('ADMIN')) return { ok: false, reason: 'NOT_ADMIN' };
+  const target = await getUser(db, wallet);
+  if (target === null) return { ok: false, reason: 'UNKNOWN_USER' };
+  return { ok: true, changed: false, user: target };
 }
 
 export interface UserPage {

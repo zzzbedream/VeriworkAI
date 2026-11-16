@@ -8,6 +8,9 @@ type AbiError = Extract<Abi[number], { readonly type: 'error' }>;
 /** Errors raised by libraries the contracts use, kept even if an ABI snapshot omits them. */
 const LIBRARY_ERRORS_ABI = parseAbi([
   'error PermitFailed(uint256 allowance, uint256 required)',
+  // TokenTransfers: every G$ movement is at par; a transfer fee of either kind reverts it.
+  'error SenderFeeNotSupported(uint256 spent, uint256 amount)',
+  'error ReceiverFeeNotSupported(uint256 received, uint256 amount)',
   'error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed)',
   'error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed)',
   'error ERC2612ExpiredSignature(uint256 deadline)',
@@ -95,6 +98,19 @@ export interface DecodedKnownError {
   readonly name: string;
   readonly selector: Hex;
   readonly args: readonly unknown[];
+  /**
+   * The same arguments by their Solidity parameter name (e.g. `EpochNotSettleable` gives `epochId`,
+   * `settleableFrom`, `settleableUntil`), so callers never depend on argument positions.
+   */
+  readonly namedArgs: Readonly<Record<string, unknown>>;
+}
+
+function namedArgsOf(item: AbiError, args: readonly unknown[]): Readonly<Record<string, unknown>> {
+  return Object.fromEntries(
+    item.inputs.flatMap((input, index) =>
+      input.name === undefined || input.name === '' ? [] : [[input.name, args[index]]],
+    ),
+  );
 }
 
 const MAX_WALK_DEPTH = 8;
@@ -127,8 +143,14 @@ export function decodeKnownError(value: unknown): DecodedKnownError | null {
   try {
     const decoded = decodeErrorResult({ abi: KNOWN_ERRORS_ABI, data });
     const selector = data.slice(0, 10) as Hex;
-    const args = decoded.args ?? [];
-    return { key: decodedKey(decoded.errorName, args), name: decoded.errorName, selector, args };
+    const args: readonly unknown[] = decoded.args ?? [];
+    return {
+      key: decodedKey(decoded.errorName, args),
+      name: decoded.errorName,
+      selector,
+      args,
+      namedArgs: namedArgsOf(decoded.abiItem, args),
+    };
   } catch {
     // Unknown selector or malformed arguments: the caller shows a generic message.
     return null;

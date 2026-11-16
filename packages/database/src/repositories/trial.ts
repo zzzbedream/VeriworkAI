@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { lower, lowerOrNull, lowerRoot, toWei, weiFromText, weiInput } from '../convert';
 import type { DbClient } from '../db-types';
 import type { Prisma, PrismaClient, TrialSession } from '../generated/prisma/client';
+import { mapSequential } from '../sequential';
 import { lockOpenBatch } from './locks';
 
 export interface TrialSessionRecord {
@@ -90,54 +91,67 @@ export async function recordTrialTask(
 
 export interface TrialConversion {
   readonly session: TrialSessionRecord;
-  /** Trial submissions this human reviewed or QA-voted from another wallet, rejected now. */
-  readonly rejectedSelfReviews: readonly string[];
   /**
-   * Self-reviewed trial submissions whose batch was already frozen / settled: they could not be
-   * rejected here and must be handled by an operator (alert).
+   * Trial submissions this human reviewed or QA-voted from another wallet, voided now: a decision on
+   * your own work validates nothing, so nobody (worker, reviewer or QA) is paid for them.
+   */
+  readonly voidedSelfReviews: readonly string[];
+  /**
+   * Self-reviewed trial submissions this conversion could NOT void: their batch is already frozen
+   * for consensus (payout pinned for `markConsensus`) or settled. Known edge: when such work was
+   * ACCEPTED, that payout still pays this human's reviewer / QA fee and escrows the trial reward for
+   * the wallet (rejected trial work pays nobody, so only accepted work matters). The caller must alert
+   * an operator, who can have the guardian veto the epoch before it becomes claimable. Bounded by the
+   * 2-task trial limit and one trial reward per human.
    */
   readonly unresolvedSelfReviews: readonly string[];
 }
 
 /**
  * While a trial wallet had no root, its human may have reviewed or voted on its work from another
- * wallet. Rejects that work where the batch is still open (batch locked first, as everywhere).
+ * wallet. Voids that work, verdict or not, where the batch is still open (batch locked first, as
+ * everywhere); a voided submission still uses one of the item's attempts. Work of a frozen batch is
+ * only reported (see `TrialConversion.unresolvedSelfReviews`): its payout is pinned.
  */
-async function rejectSelfReviewedTrialWork(
+async function voidSelfReviewedTrialWork(
   tx: Prisma.TransactionClient,
   wallet: string,
   root: string,
   now: Date,
-): Promise<{ readonly rejected: readonly string[]; readonly unresolved: readonly string[] }> {
+): Promise<{ readonly voided: readonly string[]; readonly unresolved: readonly string[] }> {
   const conflicted = await tx.taskSubmission.findMany({
     where: {
       workerAddress: wallet,
       isTrial: true,
-      status: { not: 'REJECTED' },
+      status: { not: 'VOIDED' },
       OR: [{ reviewerRoot: root }, { votes: { some: { qaRoot: root } } }],
     },
     select: { id: true, batchId: true },
   });
-  const outcomes = await Promise.all(
-    conflicted.map(async (submission) => {
-      if (!(await lockOpenBatch(tx, submission.batchId)))
-        return { id: submission.id, rejected: false };
-      await tx.taskSubmission.update({
-        where: { id: submission.id },
-        data: { status: 'REJECTED', qaPassed: false, activeItemId: null, finalizedAt: now },
-      });
-      return { id: submission.id, rejected: true };
-    }),
-  );
+  const outcomes = await mapSequential(conflicted, async (submission) => {
+    if (!(await lockOpenBatch(tx, submission.batchId))) return { id: submission.id, voided: false };
+    // VOIDED has no verdict: a QA verdict the work had already received is cleared too.
+    await tx.taskSubmission.update({
+      where: { id: submission.id },
+      data: {
+        status: 'VOIDED',
+        voidReason: 'CONFLICT_OF_INTEREST',
+        qaPassed: null,
+        activeItemId: null,
+        finalizedAt: now,
+      },
+    });
+    return { id: submission.id, voided: true };
+  });
   return {
-    rejected: outcomes.filter((outcome) => outcome.rejected).map((outcome) => outcome.id),
-    unresolved: outcomes.filter((outcome) => !outcome.rejected).map((outcome) => outcome.id),
+    voided: outcomes.filter((outcome) => outcome.voided).map((outcome) => outcome.id),
+    unresolved: outcomes.filter((outcome) => !outcome.voided).map((outcome) => outcome.id),
   };
 }
 
 /**
  * The trial wallet passed GoodID: records the conversion (first time only), attaches the root to the
- * wallet's trial submissions so conflict-of-interest and history checks see the human, and rejects
+ * wallet's trial submissions so conflict-of-interest and history checks see the human, and voids
  * trial work the same human reviewed from another wallet. The "one trial reward per human" rule is
  * enforced on-chain at claim time (`trialRewardUsed[root]`); read it there to show forfeits.
  */
@@ -159,14 +173,14 @@ export async function convertTrialToVerified(
             data: { convertedToVerifiedAt: now, convertedRoot: goodIdRoot },
           })
         : session;
-    const selfReviews = await rejectSelfReviewedTrialWork(tx, wallet, goodIdRoot, now);
+    const selfReviews = await voidSelfReviewedTrialWork(tx, wallet, goodIdRoot, now);
     await tx.taskSubmission.updateMany({
       where: { workerAddress: wallet, isTrial: true, workerRoot: null },
       data: { workerRoot: goodIdRoot },
     });
     return {
       session: toTrialRecord(updated),
-      rejectedSelfReviews: selfReviews.rejected,
+      voidedSelfReviews: selfReviews.voided,
       unresolvedSelfReviews: selfReviews.unresolved,
     };
   });

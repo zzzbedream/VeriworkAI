@@ -155,14 +155,19 @@ export interface ConsistencyInput {
   /** Payout sent to `markConsensus` for each batch settled in the epoch. */
   readonly batchPayouts: ReadonlyMap<string, bigint>;
   readonly bonusAmount: bigint;
+  /**
+   * `VeriWorkCore.maxEpochTotal()`, when known: `settleEpoch` reverts `EpochTotalTooLarge(total, max)`
+   * above it (the bonus counts toward the total).
+   */
+  readonly maxEpochTotal?: bigint;
 }
 
 /**
  * Settlement invariant: Σ allocations of a batch == its `markConsensus` payout, Σ bonus ==
- * `bonusAmount`, hence Σ allocations == epoch total (`Σ payout + bonus`).
+ * `bonusAmount`, hence Σ allocations == epoch total (`Σ payout + bonus`), within `maxEpochTotal`.
  */
 export function checkEpochConsistency(input: ConsistencyInput): readonly string[] {
-  const { aggregate, batchPayouts, bonusAmount } = input;
+  const { aggregate, batchPayouts, bonusAmount, maxEpochTotal } = input;
   const problems: string[] = [];
   for (const [batchId, payout] of batchPayouts) {
     const allocated = aggregate.batchTotals.get(batchId) ?? 0n;
@@ -180,5 +185,7 @@ export function checkEpochConsistency(input: ConsistencyInput): readonly string[
     Array.from(batchPayouts.values()).reduce((sum, payout) => sum + payout, 0n) + bonusAmount;
   if (aggregate.total !== expectedTotal)
     problems.push(`total: allocated ${aggregate.total} != ${expectedTotal}`);
+  if (maxEpochTotal !== undefined && expectedTotal > maxEpochTotal)
+    problems.push(`total ${expectedTotal} exceeds maxEpochTotal ${maxEpochTotal}`);
   return problems;
 }
