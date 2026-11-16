@@ -43,6 +43,7 @@ describe('AppHeader', () => {
     const nav = within(banner).getByRole('navigation', { name: 'Main' });
     expect(within(nav).getByRole('link', { name: 'Try it' })).toHaveAttribute('aria-current', 'page');
     expect(within(nav).getByRole('link', { name: 'Verify' })).not.toHaveAttribute('aria-current');
+    expect(within(nav).getAllByRole('link').map((link) => link.getAttribute('href'))).toEqual(['/demo', '/work', '/week', '/review', '/qa', '/verify']);
     expect(within(banner).getByRole('button', { name: 'Connect wallet' })).toBeInTheDocument();
     expect(within(banner).getByRole('combobox', { name: 'Language' })).toHaveValue('en');
   });

@@ -54,6 +54,18 @@ export async function readJsonBody<T>(
   return parsed.data;
 }
 
+/** Validates `value` (route params, query strings) with `schema`; `VALIDATION_FAILED` otherwise. */
+export function parseInput<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ApiFailure('VALIDATION_FAILED', formatValidationIssues(parsed.error));
+  return parsed.data;
+}
+
+/** The request's query string as an object, validated with `schema` (unknown keys are refused by strict schemas). */
+export function readQuery<T>(request: Request, schema: z.ZodType<T>): T {
+  return parseInput(schema, Object.fromEntries(new URL(request.url).searchParams));
+}
+
 /** Value of one cookie from the `Cookie` header (cookie values are never logged). */
 export function readCookie(request: Request, name: string): string | null {
   const header = request.headers.get('cookie');

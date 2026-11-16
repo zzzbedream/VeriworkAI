@@ -14,7 +14,8 @@ const ME = {
   locale: 'en',
   languages: [],
   telegramLinked: false,
-  week: { weekId: 2967, dayIndex: 0, weekStart: '2026-11-16T12:00:00.000Z' },
+  trial: { used: 0, remaining: 2, escrowedWei: '0', converted: false },
+    week: { weekId: 2967, dayIndex: 0, weekStart: '2026-11-16T12:00:00.000Z', staked: false, ubiMask: 0, taskMask: 0, fiveDayEligible: false },
 };
 
 describe('api client', () => {

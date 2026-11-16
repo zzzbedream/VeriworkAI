@@ -9,7 +9,7 @@ type Props = {
   readonly dictionary: Dictionary;
 };
 
-/** Site header of the app pages: brand, "Try it" / "Verify", GoodID badge, language and wallet. */
+/** Site header of the app pages: brand, the app sections, GoodID badge, language and wallet. */
 export function AppHeader({ dictionary: t }: Props) {
   return (
     <header className="border-b border-rule bg-paper/95">
@@ -24,6 +24,10 @@ export function AppHeader({ dictionary: t }: Props) {
             label={t.nav.label}
             links={[
               { href: '/demo', label: t.nav.tryIt },
+              { href: '/work', label: t.nav.work },
+              { href: '/week', label: t.nav.week },
+              { href: '/review', label: t.nav.review },
+              { href: '/qa', label: t.nav.qa },
               { href: '/verify', label: t.nav.verify },
             ]}
           />

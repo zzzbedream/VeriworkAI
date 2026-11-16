@@ -5,6 +5,9 @@ import { ApiFailure, ConfigError } from './errors';
 
 export type RouteHandler = (request: Request) => Promise<Response>;
 
+/** A handler of a dynamic route: `params` are the awaited Next.js segment values (validated inside). */
+export type ParamsRouteHandler = (request: Request, params: unknown) => Promise<Response>;
+
 /**
  * Wraps a handler with the error envelope: expected failures keep their code and safe message,
  * configuration problems fail closed, anything else is logged and answered generically (no
@@ -24,4 +27,9 @@ export function apiRoute(name: string, handler: RouteHandler): RouteHandler {
       return jsonError('INTERNAL_ERROR', message);
     }
   };
+}
+
+/** `apiRoute` for dynamic routes (`/api/tasks/{itemId}/submit`, ...). */
+export function apiRouteWithParams(name: string, handler: ParamsRouteHandler): ParamsRouteHandler {
+  return (request, params) => apiRoute(name, (inner) => handler(inner, params))(request);
 }

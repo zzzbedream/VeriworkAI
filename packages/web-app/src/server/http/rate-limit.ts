@@ -13,7 +13,18 @@ export const RATE_LIMITS = {
   authVerify: { name: 'auth-verify', limit: 10, windowSec: 60 },
   authLogout: { name: 'auth-logout', limit: 30, windowSec: 60 },
   me: { name: 'me', limit: 60, windowSec: 60 },
+  updateMe: { name: 'me-update', limit: 20, windowSec: 60 },
   identity: { name: 'identity', limit: 120, windowSec: 60 },
+  nextTask: { name: 'tasks-next', limit: 120, windowSec: 60 },
+  submitTask: { name: 'tasks-submit', limit: 30, windowSec: 60 },
+  nextReview: { name: 'review-next', limit: 120, windowSec: 60 },
+  submitReview: { name: 'review-submit', limit: 30, windowSec: 60 },
+  nextQa: { name: 'qa-next', limit: 120, windowSec: 60 },
+  submitQa: { name: 'qa-vote', limit: 30, windowSec: 60 },
+  week: { name: 'week', limit: 60, windowSec: 60 },
+  claims: { name: 'claims', limit: 60, windowSec: 60 },
+  admin: { name: 'admin', limit: 60, windowSec: 60 },
+  adminWrite: { name: 'admin-write', limit: 30, windowSec: 60 },
 } as const satisfies Readonly<Record<string, RateLimitRule>>;
 
 /** Counts one request for `subject` (an IP or an address); throws `RATE_LIMITED` with `Retry-After`. */

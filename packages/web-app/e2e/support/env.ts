@@ -4,6 +4,8 @@ export const E2E_BASE_URL = `http://localhost:${E2E_PORT}`;
 /** Celo Sepolia: the mock identity reader is refused on Celo mainnet builds. */
 export const E2E_CHAIN_ID = 11_142_220;
 export const E2E_DIST_DIR = '.next-e2e';
+/** Set by the global setup: URL of the throwaway PostgreSQL the E2E server uses (specs seed it). */
+export const E2E_DATABASE_URL_ENV = 'E2E_DATABASE_URL';
 
 export const E2E_ENV: Readonly<Record<string, string>> = {
   E2E_MODE: '1',

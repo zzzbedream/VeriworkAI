@@ -50,14 +50,16 @@ export function WalletAccountProvider({ children }: { readonly children: ReactNo
   }, [wagmiAddress]);
 
   useEffect(() => {
-    if (connector === undefined) return undefined;
+    // After a reload wagmi restores the connection from its cookie with a plain connector object (no
+    // methods) until it reconnects; the real connector arrives later and this effect runs again.
+    if (connector === undefined || typeof (connector as { getProvider?: unknown }).getProvider !== 'function') return undefined;
     let cancelled = false;
     let provider: EventfulProvider | null = null;
     const onAccountsChanged = (accounts: unknown) => {
       if (!cancelled) setOverride({ address: firstAccount(accounts), basis: basisRef.current });
     };
-    connector
-      .getProvider()
+    Promise.resolve()
+      .then(() => connector.getProvider())
       .then((candidate) => {
         if (cancelled || !isEventfulProvider(candidate)) return;
         provider = candidate;

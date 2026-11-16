@@ -52,15 +52,33 @@ const SessionContext = createContext<Session | null>(null);
 export interface SessionProviderProps {
   readonly children: ReactNode;
   readonly api?: SessionApi;
+  /**
+   * Whether a session cookie came with the page request (read by the server; the cookie itself is
+   * HttpOnly). Without one, `/api/me` is not called until the user signs in, so anonymous visitors
+   * never trigger a 401. Defaults to `true` (ask the server).
+   */
+  readonly initialHint?: boolean;
 }
 
 /** SIWE session (free signature, HttpOnly cookie); signs out by itself when the wallet account changes. */
-export function SessionProvider({ children, api = DEFAULT_SESSION_API }: SessionProviderProps) {
+export function SessionProvider({ children, api = DEFAULT_SESSION_API, initialHint = true }: SessionProviderProps) {
   const wallet = useWalletAccount();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const { mutateAsync: signMessageAsync } = useSignMessage();
-  const sessionQuery = useQuery({ queryKey: SESSION_QUERY_KEY, queryFn: api.fetchMe, staleTime: 60_000, retry: false });
+  const [hint, setHint] = useState(initialHint);
+  const sessionQuery = useQuery({
+    queryKey: SESSION_QUERY_KEY,
+    queryFn: async () => {
+      const current = await api.fetchMe();
+      // No session after all (expired cookie): stop asking until the next sign-in.
+      if (current === null) setHint(false);
+      return current;
+    },
+    staleTime: 60_000,
+    retry: false,
+    enabled: hint,
+  });
   const me = sessionQuery.data ?? null;
   const sessionAddress = me?.address ?? null;
   const [signingFor, setSigningFor] = useState<Address | null>(null);
@@ -73,6 +91,7 @@ export function SessionProvider({ children, api = DEFAULT_SESSION_API }: Session
     } catch {
       // The cookie may already be gone; local session state is cleared either way.
     }
+    setHint(false);
     queryClient.setQueryData(SESSION_QUERY_KEY, null);
   }, [api, queryClient]);
 
@@ -112,7 +131,8 @@ export function SessionProvider({ children, api = DEFAULT_SESSION_API }: Session
       });
       const signature = await signMessageAsync({ account, message });
       await api.verifySignIn(message, signature);
-      await queryClient.invalidateQueries({ queryKey: SESSION_QUERY_KEY });
+      setHint(true);
+      await queryClient.fetchQuery({ queryKey: SESSION_QUERY_KEY, queryFn: api.fetchMe, staleTime: 0 });
     } catch (error: unknown) {
       setFailure({ address: owner, error: sessionErrorOf(error) });
     } finally {
@@ -121,7 +141,8 @@ export function SessionProvider({ children, api = DEFAULT_SESSION_API }: Session
   }, [api, queryClient, signMessageAsync, t.session.statement, wallet.address, wallet.checksumAddress, wallet.isOnAppChain]);
 
   const matchesWallet = sessionAddress !== null && (wallet.address === null || wallet.address === sessionAddress);
-  const status: SessionStatus = sessionQuery.isPending ? 'loading' : matchesWallet ? 'signed-in' : 'signed-out';
+  const status: SessionStatus =
+    !hint && me === null ? 'signed-out' : sessionQuery.isPending ? 'loading' : matchesWallet ? 'signed-in' : 'signed-out';
   const error = failure !== null && failure.address === wallet.address ? failure.error : null;
   const isSigningIn = signingFor !== null && signingFor === wallet.address;
 

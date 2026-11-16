@@ -4,9 +4,11 @@ import { createPublicClient, custom, type Address } from 'viem';
 import { celo } from 'viem/chains';
 import { createSiweMessage, type CreateSiweMessageParameters } from 'viem/siwe';
 import { afterAll, beforeEach, inject } from 'vitest';
+import { ChainReadUnavailable, type CoreReader } from '@/server/chain/core-reader';
 import type { ServerConfig } from '@/server/config';
 import type { ServerDeps } from '@/server/deps';
 import type { IdentityReader, IdentityReadOptions, IdentitySnapshot } from '@/server/identity/types';
+import { issueSessionToken } from '@/server/session/token';
 import { siweVerifierFor } from '@/server/siwe/validate';
 
 export const APP_ORIGIN = 'https://app.veriwork.test';
@@ -79,17 +81,62 @@ export function fakeIdentityReader(
   };
 }
 
+export const TEST_CORE = '0xec9ea648d5f8c3bcb5e26bd155dcf27ed4b51c25' as Address;
+
+export interface FakeCoreReaderOptions {
+  /** Wallets holding DEFAULT_ADMIN_ROLE (lowercase). */
+  readonly admins?: readonly Address[];
+  /** Module ids owned per root. */
+  readonly modules?: Readonly<Record<string, readonly number[]>>;
+  /** The role read fails like an unreachable RPC. */
+  readonly unavailable?: boolean;
+  /** No VeriWorkCore configured for the deployment. */
+  readonly core?: Address | null;
+}
+
+export interface FakeCoreReader extends CoreReader {
+  readonly moduleReads: Address[];
+}
+
+export function fakeCoreReader(options: FakeCoreReaderOptions = {}): FakeCoreReader {
+  const moduleReads: Address[] = [];
+  return {
+    core: options.core === undefined ? TEST_CORE : options.core,
+    moduleReads,
+    async isAdmin(account) {
+      if (options.unavailable === true) throw new ChainReadUnavailable('RPC offline in tests');
+      return (options.admins ?? []).includes(account.toLowerCase() as Address);
+    },
+    async ownedModules(root) {
+      moduleReads.push(root);
+      return options.modules?.[root.toLowerCase()] ?? [];
+    },
+    async ownsModule(root, moduleId) {
+      if (options.unavailable === true) throw new ChainReadUnavailable('RPC offline in tests');
+      return (options.modules?.[root.toLowerCase()] ?? []).includes(moduleId);
+    },
+  };
+}
+
 export function testDeps(prisma: PrismaClient, overrides: Partial<ServerDeps> = {}): ServerDeps {
   const identity = fakeIdentityReader();
+  const chain = fakeCoreReader();
   return {
     db: () => prisma,
     config: () => TEST_CONFIG,
     sessionKey: () => new TextEncoder().encode(TEST_SESSION_SECRET),
     identity: () => identity,
     verifySiwe: () => siweVerifierFor(offlinePublicClient()),
+    chain: () => chain,
     now: () => new Date(),
     ...overrides,
   };
+}
+
+/** `vw_session=<token>` for `address` (the cookie a successful sign-in sets). */
+export async function sessionCookieFor(address: Address, now: Date = new Date(), audience: string = SIWE_DOMAIN): Promise<string> {
+  const { token } = await issueSessionToken(address, new TextEncoder().encode(TEST_SESSION_SECRET), audience, now);
+  return `vw_session=${token}`;
 }
 
 export interface ApiRequestInit {

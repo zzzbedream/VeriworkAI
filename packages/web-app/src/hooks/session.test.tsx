@@ -44,7 +44,8 @@ function me(address: Address): MeResponse {
     locale: 'en',
     languages: [],
     telegramLinked: false,
-    week: { weekId: 2967, dayIndex: 0, weekStart: '2026-11-16T12:00:00.000Z' },
+    trial: { used: 0, remaining: 2, escrowedWei: '0', converted: false },
+    week: { weekId: 2967, dayIndex: 0, weekStart: '2026-11-16T12:00:00.000Z', staked: false, ubiMask: 0, taskMask: 0, fiveDayEligible: false },
   };
 }
 
@@ -84,13 +85,13 @@ function SessionPanel() {
 
 let provider: FakeProvider;
 
-function renderSession(api: SessionApi) {
+function renderSession(api: SessionApi, initialHint?: boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <I18nProvider locale="en" dictionary={en}>
         <WalletAccountProvider>
-          <SessionProvider api={api}>
+          <SessionProvider api={api} initialHint={initialHint}>
             <SessionPanel />
           </SessionProvider>
         </WalletAccountProvider>
@@ -135,6 +136,22 @@ describe('useSession', () => {
     const fields = parseSiweMessage(String(api.verifySignIn.mock.calls[0]?.[0]));
     expect(fields.issuedAt?.toISOString()).toBe('2030-01-01T00:00:00.000Z');
     expect(fields.expirationTime?.toISOString()).toBe('2030-01-01T00:10:00.000Z');
+  });
+
+  it('never asks for a session without a session hint, until the user signs in', async () => {
+    const user = userEvent.setup();
+    const api = fakeApi(null);
+    renderSession(api, false);
+    expect(screen.getByText('status: signed-out')).toBeInTheDocument();
+    expect(api.fetchMe).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(await screen.findByText('status: signed-in')).toBeInTheDocument();
+    expect(api.fetchMe).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole('button', { name: 'Sign out' }));
+    expect(await screen.findByText('status: signed-out')).toBeInTheDocument();
+    expect(api.fetchMe).toHaveBeenCalledTimes(1);
   });
 
   it('signs out on request', async () => {

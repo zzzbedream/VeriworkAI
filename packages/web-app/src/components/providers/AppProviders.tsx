@@ -17,10 +17,12 @@ type Props = {
   readonly initialState: State | undefined;
   readonly locale: Locale;
   readonly dictionary: Dictionary;
+  /** A session cookie came with the page request (see SessionProvider). */
+  readonly sessionHint?: boolean;
   readonly children: ReactNode;
 };
 
-export function AppProviders({ initialState, locale, dictionary, children }: Props) {
+export function AppProviders({ initialState, locale, dictionary, sessionHint = true, children }: Props) {
   const [config] = useState(() => createWagmiConfig());
   const [queryClient] = useState(
     () => new QueryClient({ defaultOptions: { queries: { staleTime: 30_000, refetchOnWindowFocus: false } } }),
@@ -30,7 +32,7 @@ export function AppProviders({ initialState, locale, dictionary, children }: Pro
       <QueryClientProvider client={queryClient}>
         <I18nProvider locale={locale} dictionary={dictionary}>
           <WalletAccountProvider>
-            <SessionProvider>
+            <SessionProvider initialHint={sessionHint}>
               <GoodIDBoundaryProvider>{children}</GoodIDBoundaryProvider>
             </SessionProvider>
           </WalletAccountProvider>

@@ -9,6 +9,7 @@ import { supportsFaceVerification } from '@/lib/config/chain';
 import { useSessionStore } from '@/lib/session/session-store';
 import { SwitchChainButton } from '../wallet/SwitchChainButton';
 import { WalletControls } from '../wallet/WalletControls';
+import { FaceCheckGuide } from './FaceCheckGuide';
 import { IdentityStatusCard } from './IdentityStatusCard';
 import { VerifyButton } from './VerifyButton';
 
@@ -47,6 +48,7 @@ export function VerifyPanel({ returnedFromVerification, navigate }: Props) {
       {needsVerification && canVerify && wallet.isOnAppChain ? (
         <VerifyButton label={boundary.status === 'expired' ? t.verify.startAgain : t.verify.start} navigate={navigate} />
       ) : null}
+      <FaceCheckGuide />
     </section>
   );
 }

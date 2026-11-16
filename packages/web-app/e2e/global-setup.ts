@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startLoopbackTestDatabase } from '../src/test-utils/test-database';
-import { E2E_BASE_URL, E2E_DIST_DIR, E2E_ENV, E2E_PORT } from './support/env';
+import { E2E_BASE_URL, E2E_DATABASE_URL_ENV, E2E_DIST_DIR, E2E_ENV, E2E_PORT } from './support/env';
 
 const APP_DIR = fileURLToPath(new URL('..', import.meta.url));
 const NEXT_BIN = createRequire(import.meta.url).resolve('next/dist/bin/next');
@@ -85,6 +85,8 @@ export default async function globalSetup(): Promise<() => Promise<void>> {
     }
   }
   const database = await startLoopbackTestDatabase(`veriwork-e2e-${process.pid}`);
+  // Specs seed and reset the same throwaway database (workers inherit the runner's environment).
+  process.env[E2E_DATABASE_URL_ENV] = database.url;
   const env = serverEnv(database.url);
   const server = spawn(process.execPath, [NEXT_BIN, 'start', '-p', String(E2E_PORT)], {
     cwd: APP_DIR,

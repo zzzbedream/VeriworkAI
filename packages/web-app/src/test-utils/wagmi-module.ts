@@ -19,6 +19,7 @@ export const wagmiMock = {
   switchChain: vi.fn(async (_args: unknown) => undefined),
   signMessage: vi.fn(async (_args: unknown): Promise<`0x${string}`> => `0x${'11'.repeat(65)}`),
   writeContract: vi.fn(async (_args: unknown): Promise<`0x${string}`> => `0x${'ab'.repeat(32)}`),
+  signTypedData: vi.fn(async (_args: unknown): Promise<`0x${string}`> => `0x${'22'.repeat(65)}`),
   reads: { data: undefined as readonly [bigint, bigint] | undefined, isError: false, refetch: vi.fn(async () => undefined) },
   balance: { data: undefined as { readonly value: bigint } | undefined, refetch: vi.fn(async () => undefined) },
   publicClient: undefined as unknown,
@@ -34,7 +35,14 @@ export function resetWagmiMock(): void {
   wagmiMock.publicClient = undefined;
   wagmiMock.walletClient = undefined;
   wagmiMock.isSwitchPending = false;
-  for (const fn of [wagmiMock.connect, wagmiMock.disconnect, wagmiMock.switchChain, wagmiMock.signMessage, wagmiMock.writeContract]) {
+  for (const fn of [
+    wagmiMock.connect,
+    wagmiMock.disconnect,
+    wagmiMock.switchChain,
+    wagmiMock.signMessage,
+    wagmiMock.writeContract,
+    wagmiMock.signTypedData,
+  ]) {
     fn.mockClear();
   }
 }
@@ -52,5 +60,6 @@ export const wagmiModule = {
   usePublicClient: () => wagmiMock.publicClient,
   useWalletClient: () => ({ data: wagmiMock.walletClient }),
   useWriteContract: () => ({ mutateAsync: wagmiMock.writeContract }),
+  useSignTypedData: () => ({ mutateAsync: wagmiMock.signTypedData }),
   WagmiProvider: ({ children }: { readonly children: ReactNode }) => children,
 };
