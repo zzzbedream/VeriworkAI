@@ -16,6 +16,7 @@ import {
 } from '@veriwork/shared';
 import { getAbiItem, parseSignature, zeroAddress, type AbiEvent, type Hex } from 'viem';
 import type { ChainSigner } from '../chain/clients';
+import { readFresh } from '../chain/fresh-read';
 import {
   gDollarAllowance,
   gDollarPermitNonce,
@@ -156,19 +157,22 @@ async function backfillFunding(ctx: WorkerContext, campaign: CampaignState): Pro
   const head = await ctx.chain.publicClient.getBlock({ blockTag: 'latest' });
   const age = head.timestamp - campaign.onchain.lastFundedAt;
   const around = head.number - (age > 0n ? age : 0n);
-  const logs = await ctx.chain.publicClient.getLogs({
-    address: ctx.chain.deployment.core,
-    event: campaignFundedEvent,
-    args: { campaignId: campaign.onchainId },
-    fromBlock: around > FUNDING_SEARCH_BLOCKS ? around - FUNDING_SEARCH_BLOCKS : 0n,
-    toBlock:
-      around + FUNDING_SEARCH_BLOCKS < head.number ? around + FUNDING_SEARCH_BLOCKS : head.number,
-  });
+  const logs = await readFresh(() =>
+    ctx.chain.publicClient.getLogs({
+      address: ctx.chain.deployment.core,
+      event: campaignFundedEvent,
+      args: { campaignId: campaign.onchainId },
+      fromBlock: around > FUNDING_SEARCH_BLOCKS ? around - FUNDING_SEARCH_BLOCKS : 0n,
+      toBlock:
+        around + FUNDING_SEARCH_BLOCKS < head.number ? around + FUNDING_SEARCH_BLOCKS : head.number,
+    }),
+  );
   for (const log of logs) {
-    if (log.transactionHash === null) continue;
+    const hash = log.transactionHash;
+    if (hash === null) continue;
     await recordReceipt(
       ctx,
-      await ctx.chain.publicClient.getTransactionReceipt({ hash: log.transactionHash }),
+      await readFresh(() => ctx.chain.publicClient.getTransactionReceipt({ hash })),
     );
   }
 }
@@ -190,7 +194,10 @@ async function fundCampaign(
     ? await fundWithPermit(ctx, operator, campaign.onchainId, amount)
     : await fundWithApprove(ctx, operator, campaign.onchainId, amount);
   if (hash !== null)
-    await recordReceipt(ctx, await ctx.chain.publicClient.getTransactionReceipt({ hash }));
+    await recordReceipt(
+      ctx,
+      await readFresh(() => ctx.chain.publicClient.getTransactionReceipt({ hash })),
+    );
 }
 
 async function publishCampaign(

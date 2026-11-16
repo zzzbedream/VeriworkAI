@@ -7,6 +7,7 @@ import {
   type UserRecord,
 } from '@veriwork/database';
 import type { Address } from '@veriwork/shared';
+import { isLaggingNodeError } from '../chain/fresh-read';
 import type { WorkerContext } from '../runtime/context';
 import type { Job, JobSummary } from '../runtime/job';
 import { fetchRangeEvents, type BlockRange } from './fetch-logs';
@@ -66,17 +67,10 @@ async function indexWindow(ctx: WorkerContext): Promise<IndexWindow> {
 }
 
 /**
- * Answers of a load-balanced RPC (forno) whose `eth_getLogs` node is behind the node that answered
- * `eth_blockNumber`. The range is not lost: the next run continues from the checkpoint.
+ * The range's events, or `null` when the node answering `eth_getLogs` (forno is load-balanced) is
+ * behind the one that answered `eth_blockNumber`. The range is not lost: the next run continues
+ * from the checkpoint.
  */
-const LAGGING_NODE_ERROR =
-  /block is out of range|header not found|unknown block|beyond (the )?current head|not yet available/i;
-
-export function isLaggingNodeError(error: unknown): boolean {
-  return error instanceof Error && LAGGING_NODE_ERROR.test(error.message);
-}
-
-/** The range's events, or `null` when the node answering `eth_getLogs` has not reached it yet. */
 async function fetchOrDefer(
   ctx: WorkerContext,
   range: BlockRange,

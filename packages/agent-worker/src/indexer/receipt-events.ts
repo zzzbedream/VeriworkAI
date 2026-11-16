@@ -1,6 +1,7 @@
 import { insertOnchainEvents, type OnchainEventInput } from '@veriwork/database';
 import { gDollarAbi, veriWorkCoreAbi } from '@veriwork/shared';
 import { parseEventLogs, type Address, type TransactionReceipt } from 'viem';
+import { readFresh } from '../chain/fresh-read';
 import type { WorkerContext } from '../runtime/context';
 import { reconcileEvents } from './reconcile';
 
@@ -15,7 +16,10 @@ export async function receiptEvents(
   receipt: TransactionReceipt,
 ): Promise<readonly OnchainEventInput[]> {
   const core = ctx.chain.deployment.core;
-  const block = await ctx.chain.publicClient.getBlock({ blockNumber: receipt.blockNumber });
+  // The receipt came from one forno node; the next one may not have this block yet.
+  const block = await readFresh(() =>
+    ctx.chain.publicClient.getBlock({ blockNumber: receipt.blockNumber }),
+  );
   const coreLogs = parseEventLogs({
     abi: veriWorkCoreAbi,
     logs: receipt.logs.filter((log) => same(log.address, core)),
