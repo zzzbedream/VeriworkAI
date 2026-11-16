@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -10,8 +13,7 @@
     "lint": "eslint .",
     "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run --coverage --passWithNoTests",
-    "test:e2e": "playwright test --pass-with-no-tests",
-    "build:static": "node scripts/build-static.mjs"
+    "test:e2e": "playwright test"
   },
   "dependencies": {
     "@goodsdks/citizen-sdk": "1.2.8",

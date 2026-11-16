@@ -1,2 +1,3 @@
 .vercel
 .env*
+.next-e2e/
