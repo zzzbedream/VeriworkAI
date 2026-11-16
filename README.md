@@ -5,7 +5,7 @@
 
 **Help train AI as a verified human. Get paid in G$.** A GoodBuilders Season 5 project on Celo mainnet.
 
-**Live:** [veriworkai.vercel.app](https://veriworkai.vercel.app) · **Contracts:** verified on Celo mainnet ([addresses](#deployed-contracts-celo-mainnet-chainid-42220))
+**Live:** [veriworkai.vercel.app](https://veriworkai.vercel.app) · **Reviewers' guide:** [veriworkai.vercel.app/demo](https://veriworkai.vercel.app/demo) · **Contracts:** verified on Celo mainnet ([addresses](#deployed-contracts-celo-mainnet-chainid-42220))
 
 AI labs need human feedback they can trust: one real person per seat, not bot farms. GoodDollar already has
 more than a million face-verified humans who claim UBI every day. VeriWork connects the two. Sponsors fund
@@ -31,9 +31,9 @@ flowchart LR
 | Component | Status |
 |---|---|
 | Smart contracts (`VeriWorkCore`, `AgentRegistry`) | **v2 live on Celo mainnet** and verified (addresses below). 245 unit/fuzz/invariant tests and 10 Celo-fork tests, 100% line and branch coverage, hardened after an internal multi-auditor review |
-| Domain logic and database (`shared`, `database`) | Done: 182 + 98 tests (payout math, merkle epochs, week/UBI-day math, atomic trial/nonce/rate limits) |
-| Landing page (`web-app`) | Live at [veriworkai.vercel.app](https://veriworkai.vercel.app) |
-| Full app (trial → GoodID → Wallet Week, reviewer/QA queues, sponsor portal, public dashboard) and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
+| Domain logic and database (`shared`, `database`) | Done: 214 + 128 tests (pay rules, merkle epochs, week/UBI-day math, conflict-of-interest rules, atomic trial/nonce/rate limits). Migrations applied on Neon by the production build |
+| Web app, phase A (`web-app`) | **Live:** connect a Celo wallet (MetaMask, MiniPay, Valora), free SIWE sign-in, GoodID status with real expiry, GoodDollar face verification, daily UBI claim, and the [reviewers' guide](https://veriworkai.vercel.app/demo). 269 tests, per-request nonce CSP |
+| Trial tasks, review/QA queues, admin roles, demo campaign, Wallet Week and the worker (weekly settlement, sentinel, Telegram reminders) | In progress: GoodBuilders milestone 1 (Nov 23) and milestone 2 (Dec 7) |
 
 ## How G$ is integrated
 
